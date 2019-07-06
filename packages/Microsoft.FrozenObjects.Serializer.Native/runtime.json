@@ -1,0 +1,14 @@
+{
+  "runtimes": {
+    "linux-x64": {
+      "Microsoft.FrozenObjects.Serializer.Native": {
+        "Microsoft.FrozenObjects.Serializer.Native.runtime.linux-x64": "$version$"
+      }
+    },
+    "win-x64": {
+      "Microsoft.FrozenObjects.Serializer.Native": {
+        "Microsoft.FrozenObjects.Serializer.Native.runtime.win-x64": "$version$"
+      }
+    }
+  }
+}

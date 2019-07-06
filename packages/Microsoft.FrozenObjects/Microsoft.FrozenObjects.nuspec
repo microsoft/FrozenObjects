@@ -1,0 +1,24 @@
+<?xml version="1.0" encoding="utf-8"?>
+<package xmlns="http://schemas.microsoft.com/packaging/2013/05/nuspec.xsd">
+  <metadata minClientVersion="2.12">
+    <id>Microsoft.FrozenObjects</id>
+    <version>1.0.0</version>
+    <authors>Microsoft and Contributors</authors>
+    <owners>Microsoft and Contributors</owners>
+    <requireLicenseAcceptance>true</requireLicenseAcceptance>
+    <license type="expression">MIT</license>
+    <projectUrl>https://github.com/microsoft/FrozenObjects</projectUrl>
+    <description>Deserializer for Frozen Objects.</description>
+    <copyright>Copyright © Microsoft</copyright>
+    <repository type="git" url="https://github.com/microsoft/FrozenObjects" />
+    <dependencies>
+      <group targetFramework=".NETCoreApp3.0">
+        <dependency id="System.Runtime.CompilerServices.Unsafe" version="4.0.0" />
+      </group>
+    </dependencies>
+  </metadata>
+  <files>
+    <file src="..\..\Deserializer\bin\Release\netcoreapp3.0\Microsoft.FrozenObjects.dll" target="lib\netcoreapp3.0\Microsoft.FrozenObjects.dll" />
+    <file src="..\..\Deserializer\bin\Release\netcoreapp3.0\Microsoft.FrozenObjects.InternalCalls.dll" target="lib\netcoreapp3.0\Microsoft.FrozenObjects.InternalCalls.dll" />
+  </files>
+</package>

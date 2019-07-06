@@ -1,0 +1,24 @@
+﻿<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>netcoreapp3.0</TargetFramework>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="System.Runtime.CompilerServices.Unsafe" Version="4.0.0" />
+  </ItemGroup>
+
+  <UsingTask TaskName="Microsoft.FrozenObjects.BuildTools.CreateInternalCallsAssembly" AssemblyFile="..\BuildTools\bin\$(Configuration)\netstandard2.0\Microsoft.FrozenObjects.BuildTools.dll" />
+
+  <Target Name="InvokeBuildTools" BeforeTargets="ResolveAssemblyReferences">
+    <CreateInternalCallsAssembly OutputAssemblyPath="$(OutputPath)Microsoft.FrozenObjects.InternalCalls.dll" />
+  </Target>
+
+  <ItemGroup>
+    <Reference Include="Microsoft.FrozenObjects.InternalCalls">
+      <HintPath>$(OutputPath)Microsoft.FrozenObjects.InternalCalls.dll</HintPath>
+    </Reference>
+  </ItemGroup>
+
+</Project>
