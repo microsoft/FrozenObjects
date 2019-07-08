@@ -177,6 +177,11 @@
                 for (int i = typeList.Count - 1; i > -1; --i)
                 {
                     var t = typeList[i];
+                    if (t.IsGenericType)
+                    {
+                        t = t.GetGenericTypeDefinition();
+                    }
+
                     if (!uniqueTypeRefMap.ContainsKey(t))
                     {
                         var declaringType = t.DeclaringType;
@@ -351,7 +356,7 @@
         private static void HandleGenericInst(Type type, ref SignatureTypeEncoder encoder, Dictionary<Type, PrimitiveTypeCode> primitiveTypeCodeMap, Dictionary<Type, EntityHandle> uniqueTypeRefMap)
         {
             var genericTypeArguments = type.GenericTypeArguments;
-            var genericTypeArgumentsEncoder = encoder.GenericInstantiation(uniqueTypeRefMap[type], genericTypeArguments.Length, type.IsValueType);
+            var genericTypeArgumentsEncoder = encoder.GenericInstantiation(uniqueTypeRefMap[type.GetGenericTypeDefinition()], genericTypeArguments.Length, type.IsValueType);
 
             for (int i = 0; i < genericTypeArguments.Length; ++i)
             {
