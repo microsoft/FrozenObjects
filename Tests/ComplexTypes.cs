@@ -21,13 +21,16 @@ namespace Microsoft.FrozenObjects.UnitTests
         Max = uint.MaxValue
     }
 
-    public struct GenericValueTypeWithReferences<T>
+    public class OuterStruct
     {
-        public string A;
-        public byte B;
-        public T C;
-        public T[] D;
-        public string E;
+        public struct GenericValueTypeWithReferences<T>
+        {
+            public string A;
+            public byte B;
+            public T C;
+            public T[] D;
+            public string E;
+        }
     }
 
     public class GenericBaseClassForThings<T>
@@ -38,14 +41,20 @@ namespace Microsoft.FrozenObjects.UnitTests
         public string BaseD;
     }
 
-    public class GenericReferenceTypeWithInheritance<X, T, K, V> : GenericBaseClassForThings<DictionarySlim>
+    public class OuterClass
     {
-        public T A;
-        public K[] B;
-        public V[] C;
-        public V D;
-        public X Y;
-        public Recursive R;
+        public struct FooStruct
+        {
+            public class GenericReferenceTypeWithInheritance<X, T, K, V> : GenericBaseClassForThings<DictionarySlim>
+            {
+                public T A;
+                public K[] B;
+                public V[] C;
+                public V D;
+                public X Y;
+                public Recursive R;
+            }
+        }
     }
 
     public class Recursive
