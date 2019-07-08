@@ -163,7 +163,7 @@ namespace Microsoft.FrozenObjects.UnitTests
         [Fact]
         public void ComplicatedObjectTest1()
         {
-            var complicatedObject = new GenericReferenceTypeWithInheritance<List<string>, string, int[], GenericValueTypeWithReferences<long[,]>>();
+            var complicatedObject = new OuterClass.FooStruct.GenericReferenceTypeWithInheritance<List<string>, string, int[], OuterStruct.GenericValueTypeWithReferences<long[,]>>();
             complicatedObject.R = new Recursive();
             complicatedObject.R.Data = "Food";
             complicatedObject.R.Field = complicatedObject.R;
@@ -186,7 +186,7 @@ namespace Microsoft.FrozenObjects.UnitTests
             complicatedObject.B[1][2] = int.MinValue;
             complicatedObject.B[1][3] = 3;
 
-            complicatedObject.C = new GenericValueTypeWithReferences<long[,]>[2];
+            complicatedObject.C = new OuterStruct.GenericValueTypeWithReferences<long[,]>[2];
             complicatedObject.C[0].A = "A";
             complicatedObject.C[0].B = byte.MaxValue;
             complicatedObject.C[0].C = new long[2,3];
