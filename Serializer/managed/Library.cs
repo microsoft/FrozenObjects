@@ -14,11 +14,23 @@
 
     public static class Serializer
     {
-        public static unsafe void SerializeObject(object o, string outputDataPath, string outputAssemblyFilePath, string outputNamespace, string typeName, string methodName, Version version, Type methodType = null, byte[] privateKeyOpt = null)
+        public static void SerializeObject(object o, string outputDataPath, string outputAssemblyFilePath, string outputNamespace, string typeName, string methodName, Version version, Type methodType = null, byte[] privateKeyOpt = null)
         {
-            var outputAssemblyName = Path.GetFileNameWithoutExtension(outputAssemblyFilePath);
-            var outputModuleName = Path.GetFileName(outputAssemblyFilePath);
+            Dictionary<Type, int> typeTokenMap = SerializeDataAndBuildTypeTokenMap(o, outputDataPath);
 
+            (IEnumerable<Assembly> allAssemblies, IEnumerable<Type> allTypes) = ComputeAssemblyAndTypeClosure(typeTokenMap);
+
+            MetadataBuilder metadataBuilder = CreateMetadataBuilder(Path.GetFileName(outputAssemblyFilePath), Path.GetFileNameWithoutExtension(outputAssemblyFilePath), version);
+            
+            Dictionary<Assembly, AssemblyReferenceHandle> assemblyReferenceHandleMap = AccumulateAssemblyReferenceHandles(metadataBuilder, allAssemblies);
+            Dictionary<Type, TypeReferenceHandle> uniqueTypeRefMap = AccumulateTypeReferenceHandles(metadataBuilder, assemblyReferenceHandleMap, allTypes);
+            Dictionary<Type, TypeSpecificationHandle> typeToTypeSpecMap = AccumulateTypeSpecificationHandles(metadataBuilder, uniqueTypeRefMap, typeTokenMap);
+
+            SerializeCompanionAssembly(metadataBuilder, outputAssemblyFilePath, outputNamespace, typeName, methodName, typeTokenMap, typeToTypeSpecMap, privateKeyOpt);
+        }
+
+        private static unsafe Dictionary<Type, int> SerializeDataAndBuildTypeTokenMap(object o, string outputDataPath)
+        {
             IntPtr handle;
             if (RuntimeInformation.IsOSPlatform(OSPlatform.Windows))
             {
@@ -54,12 +66,10 @@
                 }
             }
 
-            Dictionary<Type, int> typeTokenMap;
-
             try
             {
                 var span = new ReadOnlySpan<MethodTableToken>((void*)methodTableTokenTupleList, (int)methodTableTokenTupleListCount);
-                typeTokenMap = new Dictionary<Type, int>();
+                var typeTokenMap = new Dictionary<Type, int>();
 
                 for (int i = 0; i < span.Length; ++i)
                 {
@@ -67,12 +77,17 @@
                     var tmp = &mt;
                     typeTokenMap.Add(Unsafe.Read<object>(&tmp).GetType(), (int)span[i].Token); // Meh, expected assert failure: !CREATE_CHECK_STRING(bSmallObjectHeapPtr || bLargeObjectHeapPtr) https://github.com/dotnet/coreclr/blob/476dc1cb88a0dcedd891a0ef7a2e05d5c2f94f68/src/vm/object.cpp#L611
                 }
+
+                return typeTokenMap;
             }
             finally
             {
                 StdCallICleanup(methodTableTokenTupleListVecPtr, functionPointerFixupListVecPtr, NativeLibrary.GetExport(handle, "Cleanup"));
             }
+        }
 
+        private static Tuple<IEnumerable<Assembly>, IEnumerable<Type>> ComputeAssemblyAndTypeClosure(Dictionary<Type, int> typeTokenMap)
+        {
             var typeQueue = new Queue<Type>();
 
             foreach (var entry in typeTokenMap)
@@ -88,7 +103,7 @@
                 var type = typeQueue.Peek();
                 if (!allTypes.Contains(type))
                 {
-                    if (type.IsPointer || type.IsByRef || type.IsByRefLike ||type.IsCOMObject) // || type.IsCollectible ??
+                    if (type.IsPointer || type.IsByRef || type.IsByRefLike || type.IsCOMObject) // || type.IsCollectible ??
                     {
                         throw new NotSupportedException();
                     }
@@ -133,10 +148,11 @@
                 typeQueue.Dequeue();
             }
 
-            var metadataBuilder = new MetadataBuilder();
-            metadataBuilder.AddModule(0, metadataBuilder.GetOrAddString(outputModuleName), metadataBuilder.GetOrAddGuid(Guid.NewGuid()), default, default);
-            metadataBuilder.AddAssembly(metadataBuilder.GetOrAddString(outputAssemblyName), version, default, default, default, AssemblyHashAlgorithm.Sha1);
+            return new Tuple<IEnumerable<Assembly>, IEnumerable<Type>>(allAssemblies, allTypes);
+        }
 
+        private static Dictionary<Assembly, AssemblyReferenceHandle> AccumulateAssemblyReferenceHandles(MetadataBuilder metadataBuilder, IEnumerable<Assembly> allAssemblies)
+        {
             var assemblyReferenceHandleMap = new Dictionary<Assembly, AssemblyReferenceHandle>();
 
             foreach (var assembly in allAssemblies)
@@ -160,7 +176,12 @@
                 assemblyReferenceHandleMap.Add(assembly, metadataBuilder.AddAssemblyReference(assemblyNameStringHandle, assemblyName.Version, cultureStringHandle, publicKeyTokenBlobHandle, default, default));
             }
 
-            var uniqueTypeRefMap = new Dictionary<Type, EntityHandle>();
+            return assemblyReferenceHandleMap;
+        }
+
+        private static Dictionary<Type, TypeReferenceHandle> AccumulateTypeReferenceHandles(MetadataBuilder metadataBuilder, Dictionary<Assembly, AssemblyReferenceHandle> assemblyReferenceHandleMap, IEnumerable<Type> allTypes)
+        {
+            var uniqueTypeRefMap = new Dictionary<Type, TypeReferenceHandle>();
 
             foreach (var type in allTypes)
             {
@@ -185,7 +206,7 @@
                     if (!uniqueTypeRefMap.ContainsKey(t))
                     {
                         var declaringType = t.DeclaringType;
-                        var resolutionScope = declaringType == null ? assemblyReferenceHandleMap[t.Assembly] : uniqueTypeRefMap[declaringType];
+                        var resolutionScope = declaringType == null ? (EntityHandle)assemblyReferenceHandleMap[t.Assembly] : (EntityHandle)uniqueTypeRefMap[declaringType];
 
                         var @namespace = default(StringHandle);
                         if (declaringType == null && !string.IsNullOrEmpty(t.Namespace))
@@ -198,6 +219,11 @@
                 }
             }
 
+            return uniqueTypeRefMap;
+        }
+
+        private static Dictionary<Type, TypeSpecificationHandle> AccumulateTypeSpecificationHandles(MetadataBuilder metadataBuilder, Dictionary<Type, TypeReferenceHandle> uniqueTypeRefMap, Dictionary<Type, int> typeTokenMap)
+        {
             var primitiveTypeCodeMap = new Dictionary<Type, PrimitiveTypeCode>
             {
                 { typeof(bool), PrimitiveTypeCode.Boolean },
@@ -218,7 +244,7 @@
                 { typeof(object), PrimitiveTypeCode.Object }
             };
 
-            var typeToTypeSpecMap = new Dictionary<Type, EntityHandle>();
+            var typeToTypeSpecMap = new Dictionary<Type, TypeSpecificationHandle>();
             foreach (var type in typeTokenMap.Keys)
             {
                 var blobBuilder = new BlobBuilder();
@@ -229,6 +255,83 @@
                 typeToTypeSpecMap.Add(type, metadataBuilder.AddTypeSpecification(metadataBuilder.GetOrAddBlob(blobBuilder)));
             }
 
+            return typeToTypeSpecMap;
+        }
+
+        /**
+         * Type ::=
+         *   BOOLEAN | CHAR | I1 | U1 | I2 | U2 | I4 | U4 | I8 | U8 | R4 | R8 | I | U | OBJECT | STRING
+         * | ARRAY Type ArrayShape
+         * | SZARRAY Type
+         * | GENERICINST (CLASS | VALUETYPE) TypeRefOrSpecEncoded GenArgCount Type*
+         * | (CLASS | VALUETYPE) TypeRefOrSpecEncoded
+         */
+        private static void HandleType(Type type, ref SignatureTypeEncoder encoder, Dictionary<Type, PrimitiveTypeCode> primitiveTypeCodeMap, Dictionary<Type, TypeReferenceHandle> uniqueTypeRefMap)
+        {
+            if (primitiveTypeCodeMap.TryGetValue(type, out var primitiveTypeCode))
+            {
+                // BOOLEAN | CHAR | I1 | U1 | I2 | U2 | I4 | U4 | I8 | U8 | R4 | R8 | I | U | OBJECT | STRING
+                encoder.PrimitiveType(primitiveTypeCode);
+            }
+            else if (type.IsVariableBoundArray)
+            {
+                // ARRAY Type ArrayShape
+                HandleArray(ref encoder);
+            }
+            else if (type.IsSZArray)
+            {
+                // SZARRAY Type
+                HandleSZArray(ref encoder);
+            }
+            else if (type.IsConstructedGenericType)
+            {
+                // GENERICINST (CLASS | VALUETYPE) TypeRefOrSpecEncoded GenArgCount Type*
+                HandleGenericInst(ref encoder);
+            }
+            else if (type.IsPointer || type.IsCollectible || type.IsCOMObject)
+            {
+                // what other things can be on the heap but are not caught by this check?
+                throw new NotSupportedException();
+            }
+            else
+            {
+                // CLASS TypeRefOrSpecEncoded | VALUETYPE TypeRefOrSpecEncoded
+                encoder.Type(uniqueTypeRefMap[type], type.IsValueType);
+            }
+
+            void HandleSZArray(ref SignatureTypeEncoder e)
+            {
+                e.SZArray();
+                HandleType(type.GetElementType(), ref e, primitiveTypeCodeMap, uniqueTypeRefMap);
+            }
+
+            void HandleArray(ref SignatureTypeEncoder e)
+            {
+                e.Array(out var elementTypeEncoder, out var arrayShapeEncoder);
+                HandleType(type.GetElementType(), ref elementTypeEncoder, primitiveTypeCodeMap, uniqueTypeRefMap);
+
+                var rank = type.GetArrayRank();
+                var arr = new int[rank];
+                var imm = ImmutableArray.Create(arr);
+
+                arrayShapeEncoder.Shape(rank, ImmutableArray<int>.Empty, imm); // just so we match what the C# compiler generates for mdarrays
+            }
+
+            void HandleGenericInst(ref SignatureTypeEncoder e)
+            {
+                var genericTypeArguments = type.GenericTypeArguments;
+                var genericTypeArgumentsEncoder = e.GenericInstantiation(uniqueTypeRefMap[type.GetGenericTypeDefinition()], genericTypeArguments.Length, type.IsValueType);
+
+                for (int i = 0; i < genericTypeArguments.Length; ++i)
+                {
+                    var genericTypeArgumentEncoder = genericTypeArgumentsEncoder.AddArgument();
+                    HandleType(genericTypeArguments[i], ref genericTypeArgumentEncoder, primitiveTypeCodeMap, uniqueTypeRefMap);
+                }
+            }
+        }
+
+        private static void SerializeCompanionAssembly(MetadataBuilder metadataBuilder, string outputAssemblyFilePath, string outputNamespace, string typeName, string methodName, Dictionary<Type, int> typeTokenMap, Dictionary<Type, TypeSpecificationHandle> typeToTypeSpecMap, byte[] privateKeyOpt)
+        {
             var netstandardAssemblyRef = metadataBuilder.AddAssemblyReference(metadataBuilder.GetOrAddString("netstandard"), new Version(2, 0, 0, 0), default, metadataBuilder.GetOrAddBlob(new byte[] { 0xCC, 0x7B, 0x13, 0xFF, 0xCD, 0x2D, 0xDD, 0x51 }), default, default);
             var systemObjectTypeRef = metadataBuilder.AddTypeReference(netstandardAssemblyRef, metadataBuilder.GetOrAddString("System"), metadataBuilder.GetOrAddString("Object"));
 
@@ -335,76 +438,12 @@
             }
         }
 
-        private static void HandleSZArray(Type type, ref SignatureTypeEncoder encoder, Dictionary<Type, PrimitiveTypeCode> primitiveTypeCodeMap, Dictionary<Type, EntityHandle> uniqueTypeRefMap)
+        private static MetadataBuilder CreateMetadataBuilder(string outputModuleName, string outputAssemblyName, Version version)
         {
-            encoder.SZArray();
-            HandleType(type.GetElementType(), ref encoder, primitiveTypeCodeMap, uniqueTypeRefMap);
-        }
-
-        private static void HandleArray(Type type, ref SignatureTypeEncoder encoder, Dictionary<Type, PrimitiveTypeCode> primitiveTypeCodeMap, Dictionary<Type, EntityHandle> uniqueTypeRefMap)
-        {
-            encoder.Array(out var elementTypeEncoder, out var arrayShapeEncoder);
-            HandleType(type.GetElementType(), ref elementTypeEncoder, primitiveTypeCodeMap, uniqueTypeRefMap);
-
-            var rank = type.GetArrayRank();
-            var arr = new int[rank];
-            var imm = ImmutableArray.Create(arr);
-
-            arrayShapeEncoder.Shape(rank, ImmutableArray<int>.Empty, imm); // just so we match what the C# compiler generates for mdarrays
-        }
-
-        private static void HandleGenericInst(Type type, ref SignatureTypeEncoder encoder, Dictionary<Type, PrimitiveTypeCode> primitiveTypeCodeMap, Dictionary<Type, EntityHandle> uniqueTypeRefMap)
-        {
-            var genericTypeArguments = type.GenericTypeArguments;
-            var genericTypeArgumentsEncoder = encoder.GenericInstantiation(uniqueTypeRefMap[type.GetGenericTypeDefinition()], genericTypeArguments.Length, type.IsValueType);
-
-            for (int i = 0; i < genericTypeArguments.Length; ++i)
-            {
-                var genericTypeArgumentEncoder = genericTypeArgumentsEncoder.AddArgument();
-                HandleType(genericTypeArguments[i], ref genericTypeArgumentEncoder, primitiveTypeCodeMap, uniqueTypeRefMap);
-            }
-        }
-
-        /**
-         * Type ::=
-         *   BOOLEAN | CHAR | I1 | U1 | I2 | U2 | I4 | U4 | I8 | U8 | R4 | R8 | I | U | OBJECT | STRING
-         * | ARRAY Type ArrayShape
-         * | SZARRAY Type
-         * | GENERICINST (CLASS | VALUETYPE) TypeRefOrSpecEncoded GenArgCount Type*
-         * | (CLASS | VALUETYPE) TypeRefOrSpecEncoded
-         */
-        private static void HandleType(Type type, ref SignatureTypeEncoder encoder, Dictionary<Type, PrimitiveTypeCode> primitiveTypeCodeMap, Dictionary<Type, EntityHandle> uniqueTypeRefMap)
-        {
-            if (primitiveTypeCodeMap.TryGetValue(type, out var primitiveTypeCode))
-            {
-                // BOOLEAN | CHAR | I1 | U1 | I2 | U2 | I4 | U4 | I8 | U8 | R4 | R8 | I | U | OBJECT | STRING
-                encoder.PrimitiveType(primitiveTypeCode);
-            }
-            else if (type.IsVariableBoundArray)
-            {
-                // ARRAY Type ArrayShape
-                HandleArray(type, ref encoder, primitiveTypeCodeMap, uniqueTypeRefMap);
-            }
-            else if (type.IsSZArray)
-            {
-                // SZARRAY Type
-                HandleSZArray(type, ref encoder, primitiveTypeCodeMap, uniqueTypeRefMap);
-            }
-            else if (type.IsConstructedGenericType)
-            {
-                // GENERICINST (CLASS | VALUETYPE) TypeRefOrSpecEncoded GenArgCount Type*
-                HandleGenericInst(type, ref encoder, primitiveTypeCodeMap, uniqueTypeRefMap);
-            }
-            else if (type.IsPointer || type.IsCollectible || type.IsCOMObject)
-            {
-                // what other things can be on the heap but are not caught by this check?
-                throw new NotSupportedException();
-            }
-            else
-            {
-                // CLASS TypeRefOrSpecEncoded | VALUETYPE TypeRefOrSpecEncoded
-                encoder.Type(uniqueTypeRefMap[type], type.IsValueType);
-            }
+            var metadataBuilder = new MetadataBuilder();
+            metadataBuilder.AddModule(0, metadataBuilder.GetOrAddString(outputModuleName), metadataBuilder.GetOrAddGuid(Guid.NewGuid()), default, default);
+            metadataBuilder.AddAssembly(metadataBuilder.GetOrAddString(outputAssemblyName), version, default, default, default, AssemblyHashAlgorithm.Sha1);
+            return metadataBuilder;
         }
 
         private static void WritePEImage(Stream peStream, MetadataBuilder metadataBuilder, BlobBuilder ilBuilder, byte[] privateKeyOpt, Blob mvidFixup = default)
