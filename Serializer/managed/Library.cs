@@ -257,6 +257,13 @@
 
             foreach (var type in allTypes)
             {
+                // If we don't skip arrays here we end up adding bogus TypeRefs that don't actually exist.
+                // e.g. System.Int32[] which is just a name of a plain type, and of course doesn't exist.
+                if (type.IsArray)
+                {
+                    continue;
+                }
+
                 var typeList = new List<Type> { type };
                 {
                     var tmp = type;
