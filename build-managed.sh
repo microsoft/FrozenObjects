@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/bin/sh
 
 dotnet build BuildTools/Microsoft.FrozenObjects.BuildTools.csproj -c Debug
 dotnet build BuildTools/Microsoft.FrozenObjects.BuildTools.csproj -c Release
