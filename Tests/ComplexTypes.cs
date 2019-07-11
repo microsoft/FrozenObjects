@@ -53,6 +53,7 @@ namespace Microsoft.FrozenObjects.UnitTests
                 public V D;
                 public X Y;
                 public Recursive R;
+                public Circular S;
             }
         }
     }
@@ -62,5 +63,15 @@ namespace Microsoft.FrozenObjects.UnitTests
         public Recursive Field;
 
         public string Data;
+    }
+
+    public class Bar
+    {
+        public Circular Foo;
+    }
+
+    public class Circular
+    {
+        public Bar Foo;
     }
 }

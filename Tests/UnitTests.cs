@@ -203,6 +203,10 @@ namespace Microsoft.FrozenObjects.UnitTests
             complicatedObject.C[0].D[0][0, 1] = 30;
             complicatedObject.C[0].E = "E";
 
+            complicatedObject.S = new Circular();
+            complicatedObject.S.Foo = new Bar();
+            complicatedObject.S.Foo.Foo = complicatedObject.S;
+
             complicatedObject.BaseA = new List<DictionarySlim>();
 
             var sameDict = new DictionarySlim();
@@ -253,7 +257,7 @@ namespace Microsoft.FrozenObjects.UnitTests
                     {
                         if (method.Name == "m")
                         {
-                            var obj = method.Invoke(null, new object[] { bin });
+                            var obj = (OuterClass.FooStruct.GenericReferenceTypeWithInheritance<List<string>, string, int[], OuterStruct.GenericValueTypeWithReferences<long[,]>>)method.Invoke(null, new object[] { bin });
                             UnloadFrozenObject(obj);
                             break;
                         }
