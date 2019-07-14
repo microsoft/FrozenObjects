@@ -10,12 +10,6 @@
     <PackageReference Include="System.Runtime.CompilerServices.Unsafe" Version="4.0.0" />
   </ItemGroup>
 
-  <UsingTask TaskName="Microsoft.FrozenObjects.BuildTools.CreateInternalCallsAssembly" AssemblyFile="..\BuildTools\bin\$(Configuration)\netstandard2.0\Microsoft.FrozenObjects.BuildTools.dll" />
-
-  <Target Name="InvokeBuildTools" BeforeTargets="ResolveAssemblyReferences">
-    <CreateInternalCallsAssembly OutputAssemblyPath="$(InternalCallsOutputPath)" />
-  </Target>
-
   <ItemGroup>
     <Reference Include="Microsoft.FrozenObjects.InternalCalls">
       <HintPath>$(InternalCallsOutputPath)</HintPath>
