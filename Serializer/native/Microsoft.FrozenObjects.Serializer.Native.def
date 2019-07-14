@@ -1,5 +1,0 @@
-LIBRARY "Microsoft.FrozenObjects.Serializer.Native.dll"
-
-EXPORTS
-    SerializeObject
-    Cleanup

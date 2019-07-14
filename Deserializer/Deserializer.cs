@@ -43,7 +43,7 @@
             Marshal.WriteIntPtr((IntPtr)buffer, 0 - IntPtr.Size - IntPtr.Size, (IntPtr)(length + extraSpace));
 
             // -IntPtr.Size is for segment handle
-            Marshal.WriteIntPtr((IntPtr)buffer, 0 - IntPtr.Size, GC.RegisterFrozenSegment((IntPtr)buffer, (IntPtr)length));
+            Marshal.WriteIntPtr((IntPtr)buffer, 0 - IntPtr.Size, InternalHelpers.RegisterFrozenSegment((IntPtr)buffer, (IntPtr)length));
 
             return retVal;
         }
@@ -55,7 +55,7 @@
             var length = Marshal.ReadIntPtr(baseAddress);
             var segmentHandle = Marshal.ReadIntPtr(baseAddress, IntPtr.Size);
 
-            GC.UnregisterFrozenSegment(segmentHandle);
+            InternalHelpers.UnregisterFrozenSegment(segmentHandle);
 
             if (RuntimeInformation.IsOSPlatform(OSPlatform.Windows))
             {
