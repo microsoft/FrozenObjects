@@ -21,47 +21,8 @@
         }
     }
 
-    public sealed class CreateCalliHelperAssembly : Microsoft.Build.Utilities.Task
-    {
-        [Required]
-        public string OutputAssemblyPath { get; set; }
-
-        public override bool Execute()
-        {
-            CreateCallIHelperAssembly(Path.GetFileName(this.OutputAssemblyPath), Path.GetFileNameWithoutExtension(this.OutputAssemblyPath), new Version(1, 0, 0, 0), this.OutputAssemblyPath);
-            return true;
-        }
-    }
-
     internal static class Library
     {
-        public static void CreateCallIHelperAssembly(string outputModuleName, string outputAssemblyName, Version version, string outputAssemblyFilePath)
-        {
-            var metadataBuilder = new MetadataBuilder();
-            metadataBuilder.AddModule(0, metadataBuilder.GetOrAddString(outputModuleName), metadataBuilder.GetOrAddGuid(Guid.NewGuid()), default, default);
-            metadataBuilder.AddAssembly(metadataBuilder.GetOrAddString(outputAssemblyName), version, default, default, default, AssemblyHashAlgorithm.Sha1);
-            metadataBuilder.AddTypeDefinition(default, default, metadataBuilder.GetOrAddString("<Module>"), default, MetadataTokens.FieldDefinitionHandle(1), MetadataTokens.MethodDefinitionHandle(1));
-
-            var netstandardAssemblyRef = metadataBuilder.AddAssemblyReference(metadataBuilder.GetOrAddString("netstandard"), new Version(2, 0, 0, 0), default, metadataBuilder.GetOrAddBlob(new byte[] { 0xCC, 0x7B, 0x13, 0xFF, 0xCD, 0x2D, 0xDD, 0x51 }), default, default);
-            var systemObjectTypeRef = metadataBuilder.AddTypeReference(netstandardAssemblyRef, metadataBuilder.GetOrAddString("System"), metadataBuilder.GetOrAddString("Object"));
-
-            var codeBuilder = new BlobBuilder();
-
-            metadataBuilder.AddTypeDefinition(TypeAttributes.Public | TypeAttributes.Abstract | TypeAttributes.AutoLayout | TypeAttributes.AnsiClass | TypeAttributes.Sealed | TypeAttributes.BeforeFieldInit, metadataBuilder.GetOrAddString("Microsoft.FrozenObjects"), metadataBuilder.GetOrAddString("CallIndirectHelpers"), systemObjectTypeRef, MetadataTokens.FieldDefinitionHandle(1), MetadataTokens.MethodDefinitionHandle(1));
-
-            CreateCleanupMethod(metadataBuilder, codeBuilder);
-
-            var srcuAssemblyRef = metadataBuilder.AddAssemblyReference(metadataBuilder.GetOrAddString("System.Runtime.CompilerServices.Unsafe"), new Version(4, 0, 0, 0), default, metadataBuilder.GetOrAddBlob(new byte[] { 0xB0, 0x3F, 0x5F, 0x7F, 0x11, 0xD5, 0x0A, 0x3A }), default, default);
-            var unsafeTypeRef = metadataBuilder.AddTypeReference(srcuAssemblyRef, metadataBuilder.GetOrAddString("System.Runtime.CompilerServices"), metadataBuilder.GetOrAddString("Unsafe"));
-
-            CreateSerializeObjectMethod(metadataBuilder, codeBuilder, "ManagedCallISerializeObject", SignatureCallingConvention.Default, unsafeTypeRef);
-
-            using (var fs = new FileStream(outputAssemblyFilePath, FileMode.Create, FileAccess.Write))
-            {
-                WritePEImage(fs, metadataBuilder, codeBuilder);
-            }
-        }
-
         public static void CreateInternalCallsAssembly(string outputModuleName, string outputAssemblyName, Version version, string outputAssemblyFilePath)
         {
             var metadataBuilder = new MetadataBuilder();
@@ -78,9 +39,12 @@
 
             var spcAssemblyRef = metadataBuilder.AddAssemblyReference(metadataBuilder.GetOrAddString("System.Private.CoreLib"), new Version(4, 0, 0, 0), default, metadataBuilder.GetOrAddBlob(new byte[] { 0x7C, 0xEC, 0x85, 0xD7, 0xBE, 0xA7, 0x79, 0x8E }), default, default);
             var gcTypeRef = metadataBuilder.AddTypeReference(spcAssemblyRef, metadataBuilder.GetOrAddString("System"), metadataBuilder.GetOrAddString("GC"));
+            var jitHelpersTypeRef = metadataBuilder.AddTypeReference(spcAssemblyRef, metadataBuilder.GetOrAddString("System.Runtime.CompilerServices"), metadataBuilder.GetOrAddString("JitHelpers"));
+
             var createRegisterFrozenSegmentMethodDefinitionHandle = CreateRegisterFrozenSegmentMethod(metadataBuilder, codeBuilder, CreateRegisterFrozenSegmentMemberReferenceHandle(metadataBuilder, gcTypeRef));
             CreateUnregisterFrozenSegmentMethod(metadataBuilder, codeBuilder, CreateUnregisterFrozenSegmentMemberReferenceHandle(metadataBuilder, gcTypeRef));
-            metadataBuilder.AddTypeDefinition(TypeAttributes.Public | TypeAttributes.Abstract | TypeAttributes.AutoLayout | TypeAttributes.AnsiClass | TypeAttributes.Sealed | TypeAttributes.BeforeFieldInit, metadataBuilder.GetOrAddString("Microsoft.FrozenObjects"), metadataBuilder.GetOrAddString("GC"), systemObjectTypeRef, assemblyNameField, createRegisterFrozenSegmentMethodDefinitionHandle);
+            CreateGetRawDataMethod(metadataBuilder, codeBuilder, jitHelpersTypeRef);
+            metadataBuilder.AddTypeDefinition(TypeAttributes.Public | TypeAttributes.Abstract | TypeAttributes.AutoLayout | TypeAttributes.AnsiClass | TypeAttributes.Sealed | TypeAttributes.BeforeFieldInit, metadataBuilder.GetOrAddString("Microsoft.FrozenObjects"), metadataBuilder.GetOrAddString("InternalHelpers"), systemObjectTypeRef, assemblyNameField, createRegisterFrozenSegmentMethodDefinitionHandle);
 
             var ignoresAccessChecksToAttributeConstructor = CreateIgnoresAccessChecksToAttributeConstructorMethod(metadataBuilder, codeBuilder, CreateAttributeConstructorMemberRef(metadataBuilder, attributeTypeRef), assemblyNameField);
             metadataBuilder.AddCustomAttribute(assemblyHandle, ignoresAccessChecksToAttributeConstructor, metadataBuilder.GetOrAddBlob(new byte[] { 0x01, 0x00, 0x16, 0x53, 0x79, 0x73, 0x74, 0x65, 0x6D, 0x2E, 0x50, 0x72, 0x69, 0x76, 0x61, 0x74, 0x65, 0x2E, 0x43, 0x6F, 0x72, 0x65, 0x4C, 0x69, 0x62, 0x00, 0x00 }));
@@ -313,202 +277,26 @@
             return metadataBuilder.AddMethodDefinition(MethodAttributes.Public | MethodAttributes.HideBySig | MethodAttributes.SpecialName, MethodImplAttributes.IL | MethodImplAttributes.Managed, metadataBuilder.GetOrAddString("get_AssemblyName"), metadataBuilder.GetOrAddBlob(signatureBuilder), bodyOffset, parameterList: default);
         }
 
-        private static void CreateSerializeObjectMethod(MetadataBuilder metadataBuilder, BlobBuilder codeBuilder, string methodName, SignatureCallingConvention calliCC, TypeReferenceHandle unsafeTypeRef)
+        private static void CreateGetRawDataMethod(MetadataBuilder metadataBuilder, BlobBuilder codeBuilder, TypeReferenceHandle jitHelpersTypeReferenceHandle)
         {
             codeBuilder.Align(4);
 
-            MemberReferenceHandle srcuAsPointerMemberReferenceHandle;
-            {
-                var signatureBuilder = new BlobBuilder();
-
-                new BlobEncoder(signatureBuilder).
-                    MethodSignature(SignatureCallingConvention.Default, 1).
-                    Parameters(1,
-                    returnType => returnType.Type().VoidPointer(),
-                    parameters =>
-                    {
-                        parameters.AddParameter().Type(isByRef: true).GenericMethodTypeParameter(0);
-                    });
-
-                srcuAsPointerMemberReferenceHandle = metadataBuilder.AddMemberReference(unsafeTypeRef, metadataBuilder.GetOrAddString("AsPointer"), metadataBuilder.GetOrAddBlob(signatureBuilder));
-            }
-
-            MethodSpecificationHandle srcuAsPointerObjectMethodSpecHandle;
-            {
-                var signatureBuilder = new BlobBuilder();
-
-                new BlobEncoder(signatureBuilder).
-                    MethodSpecificationSignature(1).AddArgument().Object();
-
-                srcuAsPointerObjectMethodSpecHandle = metadataBuilder.AddMethodSpecification(srcuAsPointerMemberReferenceHandle, metadataBuilder.GetOrAddBlob(signatureBuilder));
-            }
+            var signatureBuilder = new BlobBuilder();
+            new BlobEncoder(signatureBuilder).MethodSignature().Parameters(1, returnType => returnType.Type(true).Byte(), parameters => { parameters.AddParameter().Type().Object(); });
 
             var ilBuilder = new BlobBuilder();
+
             var il = new InstructionEncoder(ilBuilder);
-
-            il.LoadArgumentAddress(0);
-            il.OpCode(ILOpCode.Call);
-            il.Token(srcuAsPointerObjectMethodSpecHandle);
-            il.LoadArgument(1);
-            il.LoadArgument(2);
-
-            il.LoadArgument(3);
-            il.StoreLocal(0);
-            il.LoadLocal(0);
-            il.OpCode(ILOpCode.Conv_i);
-
-            il.LoadArgument(4);
-            il.StoreLocal(1);
-            il.LoadLocal(1);
-            il.OpCode(ILOpCode.Conv_i);
-
-            il.LoadArgument(5);
-            il.StoreLocal(2);
-            il.LoadLocal(2);
-            il.OpCode(ILOpCode.Conv_i);
-
-            il.LoadArgument(6);
-            il.StoreLocal(3);
-            il.LoadLocal(3);
-            il.OpCode(ILOpCode.Conv_i);
-
-            il.LoadArgument(7);
-            il.StoreLocal(4);
-            il.LoadLocal(4);
-            il.OpCode(ILOpCode.Conv_i);
-
-            il.LoadArgument(8);
-            il.StoreLocal(5);
-            il.LoadLocal(5);
-            il.OpCode(ILOpCode.Conv_i);
-
-            il.LoadArgument(9);
-
-            {
-                var signatureBuilder = new BlobBuilder();
-
-                new BlobEncoder(signatureBuilder).
-                    MethodSignature(calliCC).
-                    Parameters(9,
-                    returnType => returnType.Void(),
-                    parameters =>
-                    {
-                        parameters.AddParameter().Type().IntPtr();
-                        parameters.AddParameter().Type().IntPtr();
-                        parameters.AddParameter().Type().IntPtr();
-                        parameters.AddParameter().Type().IntPtr();
-                        parameters.AddParameter().Type().IntPtr();
-                        parameters.AddParameter().Type().IntPtr();
-                        parameters.AddParameter().Type().IntPtr();
-                        parameters.AddParameter().Type().IntPtr();
-                        parameters.AddParameter().Type().IntPtr();
-                    });
-
-                il.CallIndirect(metadataBuilder.AddStandaloneSignature(metadataBuilder.GetOrAddBlob(signatureBuilder)));
-            }
-
-            il.OpCode(ILOpCode.Ret);
-
-            var localsBuilder = new BlobBuilder();
-            var encoder = new BlobEncoder(localsBuilder).LocalVariableSignature(6);
-            encoder.AddVariable().Type(isByRef: true, isPinned: true).IntPtr();
-            encoder.AddVariable().Type(isByRef: true, isPinned: true).IntPtr();
-            encoder.AddVariable().Type(isByRef: true, isPinned: true).IntPtr();
-            encoder.AddVariable().Type(isByRef: true, isPinned: true).IntPtr();
-            encoder.AddVariable().Type(isByRef: true, isPinned: true).IntPtr();
-            encoder.AddVariable().Type(isByRef: true, isPinned: true).IntPtr();
-
-            var methodBodyStream = new MethodBodyStreamEncoder(codeBuilder);
-            int bodyOffset = methodBodyStream.AddMethodBody(il, maxStack: 16, metadataBuilder.AddStandaloneSignature(metadataBuilder.GetOrAddBlob(localsBuilder)));
-            ilBuilder.Clear();
-
-            {
-                var signatureBuilder = new BlobBuilder();
-
-                new BlobEncoder(signatureBuilder).
-                    MethodSignature().
-                    Parameters(10,
-                    returnType => returnType.Void(),
-                    parameters =>
-                    {
-                        parameters.AddParameter().Type().Object();
-                        parameters.AddParameter().Type().IntPtr();
-                        parameters.AddParameter().Type().IntPtr();
-                        parameters.AddParameter().Type(isByRef: true).IntPtr();
-                        parameters.AddParameter().Type(isByRef: true).IntPtr();
-                        parameters.AddParameter().Type(isByRef: true).IntPtr();
-                        parameters.AddParameter().Type(isByRef: true).IntPtr();
-                        parameters.AddParameter().Type(isByRef: true).IntPtr();
-                        parameters.AddParameter().Type(isByRef: true).IntPtr();
-                        parameters.AddParameter().Type().IntPtr();
-                    });
-
-                var parameterHandle = metadataBuilder.AddParameter(ParameterAttributes.None, metadataBuilder.GetOrAddString("root"), 1);
-                metadataBuilder.AddParameter(ParameterAttributes.None, metadataBuilder.GetOrAddString("path"), 2);
-                metadataBuilder.AddParameter(ParameterAttributes.None, metadataBuilder.GetOrAddString("functionPointerType"), 3);
-                metadataBuilder.AddParameter(ParameterAttributes.Out, metadataBuilder.GetOrAddString("outMethodTableTokenTupleList"), 4);
-                metadataBuilder.AddParameter(ParameterAttributes.Out, metadataBuilder.GetOrAddString("outMethodTableTokenTupleListVecPtr"), 5);
-                metadataBuilder.AddParameter(ParameterAttributes.Out, metadataBuilder.GetOrAddString("outMethodTableTokenTupleListCount"), 6);
-                metadataBuilder.AddParameter(ParameterAttributes.Out, metadataBuilder.GetOrAddString("outFunctionPointerFixupList"), 7);
-                metadataBuilder.AddParameter(ParameterAttributes.Out, metadataBuilder.GetOrAddString("outFunctionPointerFixupListVecPtr"), 8);
-                metadataBuilder.AddParameter(ParameterAttributes.Out, metadataBuilder.GetOrAddString("outFunctionPointerFixupListCount"), 9);
-                metadataBuilder.AddParameter(ParameterAttributes.None, metadataBuilder.GetOrAddString("addr"), 10);
-
-                metadataBuilder.AddMethodDefinition(MethodAttributes.Public | MethodAttributes.HideBySig | MethodAttributes.Static, MethodImplAttributes.IL | MethodImplAttributes.Managed, metadataBuilder.GetOrAddString(methodName), metadataBuilder.GetOrAddBlob(signatureBuilder), bodyOffset, parameterList: parameterHandle);
-            }
-        }
-
-        private static void CreateCleanupMethod(MetadataBuilder metadataBuilder, BlobBuilder codeBuilder)
-        {
-            var ilBuilder = new BlobBuilder();
-            var il = new InstructionEncoder(ilBuilder);
-
             il.LoadArgument(0);
-            il.LoadArgument(1);
-            il.LoadArgument(2);
-
-            {
-                var signatureBuilder = new BlobBuilder();
-
-                new BlobEncoder(signatureBuilder).
-                    MethodSignature(SignatureCallingConvention.StdCall).
-                    Parameters(2,
-                    returnType => returnType.Void(),
-                    parameters =>
-                    {
-                        parameters.AddParameter().Type().IntPtr();
-                        parameters.AddParameter().Type().IntPtr();
-                    });
-
-                il.CallIndirect(metadataBuilder.AddStandaloneSignature(metadataBuilder.GetOrAddBlob(signatureBuilder)));
-            }
-
+            il.Call(metadataBuilder.AddMemberReference(jitHelpersTypeReferenceHandle, metadataBuilder.GetOrAddString("GetRawData"), metadataBuilder.GetOrAddBlob(signatureBuilder)));
             il.OpCode(ILOpCode.Ret);
 
             var methodBodyStream = new MethodBodyStreamEncoder(codeBuilder);
             int bodyOffset = methodBodyStream.AddMethodBody(il);
             ilBuilder.Clear();
 
-            {
-                var signatureBuilder = new BlobBuilder();
-
-                new BlobEncoder(signatureBuilder).
-                    MethodSignature().
-                    Parameters(3,
-                    returnType => returnType.Void(),
-                    parameters =>
-                    {
-                        parameters.AddParameter().Type().IntPtr();
-                        parameters.AddParameter().Type().IntPtr();
-                        parameters.AddParameter().Type().IntPtr();
-                    });
-
-                var parameterHandle = metadataBuilder.AddParameter(ParameterAttributes.None, metadataBuilder.GetOrAddString("methodTableTokenTupleList"), 1);
-                metadataBuilder.AddParameter(ParameterAttributes.None, metadataBuilder.GetOrAddString("functionPointerFixupList"), 2);
-                metadataBuilder.AddParameter(ParameterAttributes.None, metadataBuilder.GetOrAddString("addr"), 3);
-
-                metadataBuilder.AddMethodDefinition(MethodAttributes.Public | MethodAttributes.HideBySig | MethodAttributes.Static, MethodImplAttributes.IL | MethodImplAttributes.Managed, metadataBuilder.GetOrAddString("StdCallICleanup"), metadataBuilder.GetOrAddBlob(signatureBuilder), bodyOffset, parameterList: parameterHandle);
-            }
+            var parameterHandle = metadataBuilder.AddParameter(ParameterAttributes.None, metadataBuilder.GetOrAddString("o"), 1);
+            metadataBuilder.AddMethodDefinition(MethodAttributes.Public | MethodAttributes.HideBySig | MethodAttributes.Static, MethodImplAttributes.IL | MethodImplAttributes.Managed | MethodImplAttributes.AggressiveInlining, metadataBuilder.GetOrAddString("GetRawData"), metadataBuilder.GetOrAddBlob(signatureBuilder), bodyOffset, parameterList: parameterHandle);
         }
 
         private static void WritePEImage(Stream peStream, MetadataBuilder metadataBuilder, BlobBuilder ilBuilder, Blob mvidFixup = default, byte[] privateKeyOpt = null)

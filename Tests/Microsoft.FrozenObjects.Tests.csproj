@@ -15,16 +15,7 @@
 
   <ItemGroup>
     <ProjectReference Include="..\Deserializer\Microsoft.FrozenObjects.csproj" />
-    <ProjectReference Include="..\Serializer\managed\Microsoft.FrozenObjects.Serializer.csproj" />
-  </ItemGroup>
-
-  <ItemGroup>
-    <None Include="..\Serializer\native\Microsoft.FrozenObjects.Serializer.Native.dll" Link="Microsoft.FrozenObjects.Serializer.Native.dll" Condition="Exists('..\Serializer\native\Microsoft.FrozenObjects.Serializer.Native.dll')">
-      <CopyToOutputDirectory>Always</CopyToOutputDirectory>
-    </None>
-    <None Include="../Serializer/native/Microsoft.FrozenObjects.Serializer.Native.so" Link="Microsoft.FrozenObjects.Serializer.Native.so" Condition="Exists('../Serializer/native/Microsoft.FrozenObjects.Serializer.Native.so')">
-      <CopyToOutputDirectory>Always</CopyToOutputDirectory>
-    </None>
+    <ProjectReference Include="..\Serializer\Microsoft.FrozenObjects.Serializer.csproj" />
   </ItemGroup>
 
 </Project>
