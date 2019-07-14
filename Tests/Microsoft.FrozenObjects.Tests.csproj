@@ -15,7 +15,7 @@
 
   <ItemGroup>
     <ProjectReference Include="..\Deserializer\Microsoft.FrozenObjects.csproj" />
-    <ProjectReference Include="..\Serializer\managed\Microsoft.FrozenObjects.Serializer.csproj" />
+    <ProjectReference Include="..\Serializer\Microsoft.FrozenObjects.Serializer.csproj" />
   </ItemGroup>
 
 </Project>

@@ -7,7 +7,7 @@ Project("{9A19103F-16F7-4668-BE54-9A1E7A4F7556}") = "Microsoft.FrozenObjects", "
 EndProject
 Project("{9A19103F-16F7-4668-BE54-9A1E7A4F7556}") = "Microsoft.FrozenObjects.BuildTools", "BuildTools\Microsoft.FrozenObjects.BuildTools.csproj", "{09DE73E9-2A44-43FD-B869-1EFFE311E8BB}"
 EndProject
-Project("{9A19103F-16F7-4668-BE54-9A1E7A4F7556}") = "Microsoft.FrozenObjects.Serializer", "Serializer\managed\Microsoft.FrozenObjects.Serializer.csproj", "{EF3188C6-F9A8-4C79-91A4-940DBE7B4FF7}"
+Project("{9A19103F-16F7-4668-BE54-9A1E7A4F7556}") = "Microsoft.FrozenObjects.Serializer", "Serializer\Microsoft.FrozenObjects.Serializer.csproj", "{EF3188C6-F9A8-4C79-91A4-940DBE7B4FF7}"
 EndProject
 Project("{9A19103F-16F7-4668-BE54-9A1E7A4F7556}") = "Microsoft.FrozenObjects.Tests", "Tests\Microsoft.FrozenObjects.Tests.csproj", "{5C2D82E1-E77C-4938-9B9F-807E33666E34}"
 EndProject
