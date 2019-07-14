@@ -12,7 +12,7 @@
     <PackageReference Include="System.Reflection.Metadata" Version="1.5.0" />
   </ItemGroup>
 
-  <UsingTask TaskName="Microsoft.FrozenObjects.BuildTools.CreateInternalCallsAssembly" AssemblyFile="..\..\BuildTools\bin\$(Configuration)\netstandard2.0\Microsoft.FrozenObjects.BuildTools.dll" />
+  <UsingTask TaskName="Microsoft.FrozenObjects.BuildTools.CreateInternalCallsAssembly" AssemblyFile="..\BuildTools\bin\$(Configuration)\netstandard2.0\Microsoft.FrozenObjects.BuildTools.dll" />
 
   <Target Name="InvokeBuildTools" BeforeTargets="ResolveAssemblyReferences">
     <CreateInternalCallsAssembly OutputAssemblyPath="$(InternalCallsOutputPath)" />
