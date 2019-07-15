@@ -4,26 +4,21 @@
     <TargetFramework>netcoreapp3.0</TargetFramework>
     <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
     <DebugType>Embedded</DebugType>
+    <EmbedAllSources>true</EmbedAllSources>
     <LangVersion>7.3</LangVersion>
-    <InternalCallsOutputPath>$(BaseIntermediateOutputPath)/$(Configuration)/$(TargetFramework)/Microsoft.FrozenObjects.InternalCalls.dll</InternalCallsOutputPath>
+    <InternalCallsOutputPath>$(MSBuildThisFileDirectory)/$(BaseIntermediateOutputPath)/$(Configuration)/$(TargetFramework)/Microsoft.FrozenObjects.InternalCalls.dll</InternalCallsOutputPath>
     <GeneratePackageOnBuild Condition="'$(Configuration)' == 'Release'">true</GeneratePackageOnBuild>
     <NuspecFile>Microsoft.FrozenObjects.nuspec</NuspecFile>
   </PropertyGroup>
-
-  <ItemGroup>
-    <PackageReference Include="System.Reflection.Metadata" Version="1.6.0" />
-  </ItemGroup>
-
-  <UsingTask TaskName="Microsoft.FrozenObjects.BuildTools.CreateInternalCallsAssembly" AssemblyFile="..\tools\bin\$(Configuration)\netstandard2.0\Microsoft.FrozenObjects.BuildTools.dll" />
-
-  <Target Name="InvokeBuildTools" BeforeTargets="ResolveAssemblyReferences" Condition="!Exists('$(InternalCallsOutputPath)')">
-    <CreateInternalCallsAssembly OutputAssemblyPath="$(InternalCallsOutputPath)" />
-  </Target>
 
   <ItemGroup>
     <Reference Include="Microsoft.FrozenObjects.InternalCalls">
       <HintPath>$(InternalCallsOutputPath)</HintPath>
     </Reference>
   </ItemGroup>
+
+  <Target Name="InvokeBuildTools" BeforeTargets="ResolveAssemblyReferences" Condition="!Exists('$(InternalCallsOutputPath)')">
+    <Exec WorkingDirectory="$(MSBuildThisFileDirectory)../tools" Command="dotnet run $(InternalCallsOutputPath)" />
+  </Target>
 
 </Project>

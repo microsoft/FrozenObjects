@@ -1,28 +1,27 @@
 ﻿namespace Microsoft.FrozenObjects.BuildTools
 {
-    using Microsoft.Build.Framework;
     using System;
     using System.IO;
     using System.Reflection;
     using System.Reflection.Metadata;
     using System.Reflection.Metadata.Ecma335;
     using System.Reflection.PortableExecutable;
-    using static Library;
 
-    public sealed class CreateInternalCallsAssembly : Microsoft.Build.Utilities.Task
+    internal static class Program
     {
-        [Required]
-        public string OutputAssemblyPath { get; set; }
-
-        public override bool Execute()
+        public static int Main(string[] args)
         {
-            CreateInternalCallsAssembly(Path.GetFileName(this.OutputAssemblyPath), Path.GetFileNameWithoutExtension(this.OutputAssemblyPath), new Version(1, 0, 0, 0), this.OutputAssemblyPath);
-            return true;
-        }
-    }
+            if (args.Length != 1)
+            {
+                Console.WriteLine("Usage: Microsoft.FrozenObjects.BuildTools.exe OutputAssemblyPath");
+                return -1;
+            }
 
-    internal static class Library
-    {
+            var outputAssemblyPath = args[0];
+            CreateInternalCallsAssembly(Path.GetFileName(outputAssemblyPath), Path.GetFileNameWithoutExtension(outputAssemblyPath), new Version(1, 0, 0, 0), outputAssemblyPath);
+            return 0;
+        }
+
         public static void CreateInternalCallsAssembly(string outputModuleName, string outputAssemblyName, Version version, string outputAssemblyFilePath)
         {
             var metadataBuilder = new MetadataBuilder();
