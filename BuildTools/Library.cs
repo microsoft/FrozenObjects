@@ -218,6 +218,8 @@
 
         private static MethodDefinitionHandle CreateIgnoresAccessChecksToAttributeConstructorMethod(MetadataBuilder metadataBuilder, BlobBuilder codeBuilder, MemberReferenceHandle attributeConstructor, FieldDefinitionHandle assemblyNameField)
         {
+            codeBuilder.Align(4);
+
             var ilBuilder = new BlobBuilder();
             var il = new InstructionEncoder(ilBuilder);
 
@@ -281,22 +283,22 @@
         {
             codeBuilder.Align(4);
 
-            var signatureBuilder = new BlobBuilder();
-            new BlobEncoder(signatureBuilder).MethodSignature().Parameters(1, returnType => returnType.Type(true).Byte(), parameters => { parameters.AddParameter().Type().Object(); });
-
             var ilBuilder = new BlobBuilder();
-
             var il = new InstructionEncoder(ilBuilder);
+
+            var signatureBuilder = new BlobBuilder();
+            new BlobEncoder(signatureBuilder).MethodSignature().Parameters(1, returnType => returnType.Type(isByRef: true).Byte(), parameters => { parameters.AddParameter().Type().Object(); });
+            var signatureHandle = metadataBuilder.GetOrAddBlob(signatureBuilder);
+
             il.LoadArgument(0);
-            il.Call(metadataBuilder.AddMemberReference(jitHelpersTypeReferenceHandle, metadataBuilder.GetOrAddString("GetRawData"), metadataBuilder.GetOrAddBlob(signatureBuilder)));
+            il.Call(metadataBuilder.AddMemberReference(jitHelpersTypeReferenceHandle, metadataBuilder.GetOrAddString("GetRawData"), signatureHandle));
             il.OpCode(ILOpCode.Ret);
 
             var methodBodyStream = new MethodBodyStreamEncoder(codeBuilder);
             int bodyOffset = methodBodyStream.AddMethodBody(il);
             ilBuilder.Clear();
 
-            var parameterHandle = metadataBuilder.AddParameter(ParameterAttributes.None, metadataBuilder.GetOrAddString("o"), 1);
-            metadataBuilder.AddMethodDefinition(MethodAttributes.Public | MethodAttributes.HideBySig | MethodAttributes.Static, MethodImplAttributes.IL | MethodImplAttributes.Managed | MethodImplAttributes.AggressiveInlining, metadataBuilder.GetOrAddString("GetRawData"), metadataBuilder.GetOrAddBlob(signatureBuilder), bodyOffset, parameterList: parameterHandle);
+            metadataBuilder.AddMethodDefinition(MethodAttributes.Public | MethodAttributes.HideBySig | MethodAttributes.Static, MethodImplAttributes.IL | MethodImplAttributes.Managed, metadataBuilder.GetOrAddString("GetRawData"), signatureHandle, bodyOffset, parameterList: default);
         }
 
         private static void WritePEImage(Stream peStream, MetadataBuilder metadataBuilder, BlobBuilder ilBuilder, Blob mvidFixup = default, byte[] privateKeyOpt = null)
