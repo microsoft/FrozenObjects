@@ -18,7 +18,6 @@
     </dependencies>
   </metadata>
   <files>
-    <file src="..\..\Deserializer\bin\Release\netcoreapp3.0\Microsoft.FrozenObjects.dll" target="lib\netcoreapp3.0\Microsoft.FrozenObjects.dll" />
-    <file src="..\..\Deserializer\bin\Release\netcoreapp3.0\Microsoft.FrozenObjects.InternalCalls.dll" target="lib\netcoreapp3.0\Microsoft.FrozenObjects.InternalCalls.dll" />
+    <file src="bin\Debug\**" target="lib" />
   </files>
 </package>
