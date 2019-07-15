@@ -18,6 +18,6 @@
     </dependencies>
   </metadata>
   <files>
-    <file src="bin\Debug\**" target="lib" />
+    <file src="bin\Release\**" target="lib" />
   </files>
 </package>

@@ -3,9 +3,10 @@
   <PropertyGroup>
     <TargetFramework>netcoreapp3.0</TargetFramework>
     <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+    <DebugType>Embedded</DebugType>
     <LangVersion>7.3</LangVersion>
     <InternalCallsOutputPath>$(BaseIntermediateOutputPath)/$(Configuration)/$(TargetFramework)/Microsoft.FrozenObjects.InternalCalls.dll</InternalCallsOutputPath>
-    <GeneratePackageOnBuild>true</GeneratePackageOnBuild>
+    <GeneratePackageOnBuild Condition="'$(Configuration)' == 'Release'">true</GeneratePackageOnBuild>
     <NuspecFile>Microsoft.FrozenObjects.nuspec</NuspecFile>
   </PropertyGroup>
 
