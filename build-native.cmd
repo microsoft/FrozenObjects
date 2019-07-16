@@ -1,2 +1,0 @@
-msbuild /p:Configuration=Debug /p:Platform=x64 Serializer\native\Microsoft.FrozenObjects.Serializer.Native.vcxproj
-msbuild /p:Configuration=Release /p:Platform=x64 Serializer\native\Microsoft.FrozenObjects.Serializer.Native.vcxproj

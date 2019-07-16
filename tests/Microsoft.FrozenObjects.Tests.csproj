@@ -14,14 +14,7 @@
   </ItemGroup>
 
   <ItemGroup>
-    <ProjectReference Include="..\Deserializer\Microsoft.FrozenObjects.csproj" />
-    <ProjectReference Include="..\Serializer\managed\Microsoft.FrozenObjects.Serializer.csproj" />
-  </ItemGroup>
-
-  <ItemGroup>
-    <None Include="..\x64\$(Configuration)\Microsoft.FrozenObjects.Serializer.Native.dll" Link="Microsoft.FrozenObjects.Serializer.Native.dll">
-      <CopyToOutputDirectory>Always</CopyToOutputDirectory>
-    </None>
+    <ProjectReference Include="..\src\Microsoft.FrozenObjects.csproj" />
   </ItemGroup>
 
 </Project>

@@ -10,7 +10,6 @@
     using System.Reflection.PortableExecutable;
     using System.Runtime.CompilerServices;
     using System.Runtime.InteropServices;
-    using static CallIndirectHelpers;
 
     public static class Serializer
     {
@@ -46,63 +45,77 @@
         ///
         /// Next, please read <seealso cref="ComputeAssemblyAndTypeClosure"/>.
         /// </remarks>
-        /// <param name="o">object to serialize</param>
+        /// <param name="root">object to serialize</param>
         /// <param name="outputDataPath">file path for the serialized object graph</param>
-        private static unsafe Dictionary<Type, int> SerializeDataAndBuildTypeTokenMap(object o, string outputDataPath)
+        private static unsafe Dictionary<Type, int> SerializeDataAndBuildTypeTokenMap(object root, string outputDataPath)
         {
-            IntPtr handle;
-            if (RuntimeInformation.IsOSPlatform(OSPlatform.Windows))
-            {
-                handle = NativeLibrary.Load("Microsoft.FrozenObjects.Serializer.Native.dll");
-            }
-            else if (RuntimeInformation.IsOSPlatform(OSPlatform.Linux))
-            {
-                handle = NativeLibrary.Load("Microsoft.FrozenObjects.Serializer.Native.so");
-            }
-            else
-            {
-                throw new PlatformNotSupportedException();
-            }
+            var serializedObjectMap = new Dictionary<object, long>();
+            var mtTokenMap = new Dictionary<IntPtr, long>();
+            var objectQueue = new Queue<object>();
 
-            IntPtr methodTableTokenTupleList;
-            IntPtr methodTableTokenTupleListVecPtr;
-            IntPtr methodTableTokenTupleListCount;
-            IntPtr functionPointerFixupList;
-            IntPtr functionPointerFixupListVecPtr;
-            IntPtr outFunctionPointerFixupListCount;
-            IntPtr stringPtr = IntPtr.Zero;
+            objectQueue.Enqueue(root);
 
-            try
+            long lastReservedObjectEnd = GetObjectSize(root);
+            lastReservedObjectEnd += Padding(lastReservedObjectEnd, IntPtr.Size);
+
+            long zero = 0;
+            long currentFilePointer = 0;
+
+            using (var stream = new FileStream(outputDataPath, FileMode.Create, FileAccess.Write))
             {
-                stringPtr = Marshal.StringToHGlobalAnsi(outputDataPath);
-                ManagedCallISerializeObject(o, stringPtr, IntPtr.Zero, out methodTableTokenTupleList, out methodTableTokenTupleListVecPtr, out methodTableTokenTupleListCount, out functionPointerFixupList, out functionPointerFixupListVecPtr, out outFunctionPointerFixupListCount, NativeLibrary.GetExport(handle, "SerializeObject"));
-            }
-            finally
-            {
-                if (stringPtr != IntPtr.Zero)
+                while (objectQueue.Count != 0)
                 {
-                    Marshal.FreeHGlobal(stringPtr);
+                    WriteFileAndMoveCurrentFilePointer(stream, ref currentFilePointer, new ReadOnlySpan<byte>(&zero, IntPtr.Size));
+
+                    long objectStart = currentFilePointer;
+
+                    var o = objectQueue.Dequeue();
+                    var mt = GetObjectInfo(o, out var objectSize, out bool containsPointerOrCollectible);
+
+                    if (!mtTokenMap.TryGetValue(mt, out var mtToken))
+                    {
+                        mtToken = mtTokenMap.Count;
+                        mtTokenMap.Add(mt, mtToken);
+                    }
+
+                    var padding = Padding(objectSize, IntPtr.Size);
+
+                    WriteFileAndMoveCurrentFilePointer(stream, ref currentFilePointer, new ReadOnlySpan<byte>(&mtToken, IntPtr.Size));
+
+                    fixed (byte* data = &GetRawData(o))
+                    {
+                        WriteFileAndMoveCurrentFilePointer(stream, ref currentFilePointer, new ReadOnlySpan<byte>(data, objectSize - IntPtr.Size - IntPtr.Size));
+                    }
+
+                    WriteFileAndMoveCurrentFilePointer(stream, ref currentFilePointer, new ReadOnlySpan<byte>(&zero, padding));
+
+                    if (containsPointerOrCollectible)
+                    {
+                        int entries = *(int*)((byte*)mt - IntPtr.Size);
+                        if (entries < 0)
+                        {
+                            entries -= entries;
+                        }
+
+                        int slots = 1 + entries * 2;
+                        var gcdesc = new GCDesc((byte*)mt - (slots * IntPtr.Size), slots * IntPtr.Size);
+                        gcdesc.EnumerateObject(o, (ulong)objectSize, serializedObjectMap, objectQueue, stream, objectStart, ref lastReservedObjectEnd);
+                    }
+
+                    stream.Seek(currentFilePointer, SeekOrigin.Begin); // seek back to where the next object will be written
                 }
             }
 
-            try
-            {
-                var span = new ReadOnlySpan<MethodTableToken>((void*)methodTableTokenTupleList, (int)methodTableTokenTupleListCount);
-                var typeTokenMap = new Dictionary<Type, int>();
+            var typeTokenMap = new Dictionary<Type, int>();
 
-                for (int i = 0; i < span.Length; ++i)
-                {
-                    var mt = span[i].MethodTable;
-                    var tmp = &mt;
-                    typeTokenMap.Add(Unsafe.Read<object>(&tmp).GetType(), (int)span[i].Token); // Meh, expected assert failure: !CREATE_CHECK_STRING(bSmallObjectHeapPtr || bLargeObjectHeapPtr) https://github.com/dotnet/coreclr/blob/476dc1cb88a0dcedd891a0ef7a2e05d5c2f94f68/src/vm/object.cpp#L611
-                }
-
-                return typeTokenMap;
-            }
-            finally
+            foreach (var item in mtTokenMap)
             {
-                StdCallICleanup(methodTableTokenTupleListVecPtr, functionPointerFixupListVecPtr, NativeLibrary.GetExport(handle, "Cleanup"));
+                var mt = item.Key;
+                var tmp = &mt;
+                typeTokenMap.Add(Unsafe.Read<object>(&tmp).GetType(), (int)item.Value); // Meh, expected assert failure: !CREATE_CHECK_STRING(bSmallObjectHeapPtr || bLargeObjectHeapPtr) https://github.com/dotnet/coreclr/blob/476dc1cb88a0dcedd891a0ef7a2e05d5c2f94f68/src/vm/object.cpp#L611
             }
+
+            return typeTokenMap;
         }
 
         /// <summary>
@@ -595,11 +608,205 @@
             peBlob.WriteContentTo(peStream);
         }
 
-        [StructLayout(LayoutKind.Sequential)]
-        private struct MethodTableToken
+        private static void WriteFileAndMoveCurrentFilePointer(Stream stream, ref long currentFilePointer, ReadOnlySpan<byte> data)
         {
-            public readonly IntPtr MethodTable;
-            public readonly IntPtr Token;
+            stream.Write(data);
+            currentFilePointer += data.Length;
+        }
+
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        private static IntPtr GetObjectInfo(object obj, out int objectSize, out bool containsPointerOrCollectible)
+        {
+            unsafe
+            {
+                var mt = (MethodTable*)Unsafe.Add(ref Unsafe.As<byte, IntPtr>(ref GetRawData(obj)), -1);
+                uint flags = mt->Flags;
+                bool hasComponentSize = (flags & 0x80000000) == 0x80000000;
+
+                objectSize = mt->BaseSize;
+
+                if (hasComponentSize)
+                {
+                    int numComponents = Unsafe.As<byte, int>(ref GetRawData(obj));
+                    objectSize += numComponents * mt->ComponentSize;
+                }
+
+                containsPointerOrCollectible = (flags & 0x10000000) == 0x10000000 || (flags & 0x1000000) == 0x1000000;
+                return (IntPtr)mt;
+            }
+        }
+
+        private static ref byte GetRawData(object o)
+        {
+            return ref InternalHelpers.GetRawData(o);
+        }
+
+        private static int GetObjectSize(object obj)
+        {
+            GetObjectInfo(obj, out var objectSize, out var __);
+            return objectSize;
+        }
+
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        private static int Padding(int num, int align)
+        {
+            return 0 - num & (align - 1);
+        }
+
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        private static long Padding(long num, int align)
+        {
+            return 0 - num & (align - 1);
+        }
+
+        [StructLayout(LayoutKind.Explicit)]
+        private struct MethodTable
+        {
+            [FieldOffset(0)]
+            public ushort ComponentSize;
+
+            [FieldOffset(0)]
+            public uint Flags;
+
+            [FieldOffset(4)]
+            public int BaseSize;
+        }
+
+        private unsafe struct GCDesc
+        {
+            private readonly IntPtr data;
+
+            private readonly int size;
+
+            public GCDesc(byte* data, int size)
+            {
+                this.data = new IntPtr(data);
+                this.size = size;
+            }
+
+            [MethodImpl(MethodImplOptions.AggressiveInlining)]
+            public int GetNumSeries()
+            {
+                return (int)Marshal.ReadIntPtr(this.data + this.size - IntPtr.Size);
+            }
+
+            [MethodImpl(MethodImplOptions.AggressiveInlining)]
+            public int GetHighestSeries()
+            {
+                return this.size - IntPtr.Size * 3;
+            }
+
+            [MethodImpl(MethodImplOptions.AggressiveInlining)]
+            public int GetLowestSeries()
+            {
+                return this.size - ComputeSize(this.GetNumSeries());
+            }
+
+            [MethodImpl(MethodImplOptions.AggressiveInlining)]
+            public int GetSeriesSize(int curr)
+            {
+                return (int)Marshal.ReadIntPtr(this.data + curr);
+            }
+
+            [MethodImpl(MethodImplOptions.AggressiveInlining)]
+            public ulong GetSeriesOffset(int curr)
+            {
+                return (ulong)Marshal.ReadIntPtr(this.data + curr + IntPtr.Size);
+            }
+
+            [MethodImpl(MethodImplOptions.AggressiveInlining)]
+            public uint GetPointers(int curr, int i)
+            {
+                int offset = i * IntPtr.Size;
+                return IntPtr.Size == 8 ? (uint)Marshal.ReadInt32(this.data + curr + offset) : (uint)Marshal.ReadInt16(this.data + curr + offset);
+            }
+
+            [MethodImpl(MethodImplOptions.AggressiveInlining)]
+            public uint GetSkip(int curr, int i)
+            {
+                int offset = i * IntPtr.Size + IntPtr.Size / 2;
+                return IntPtr.Size == 8 ? (uint)Marshal.ReadInt32(this.data + curr + offset) : (uint)Marshal.ReadInt16(this.data + curr + offset);
+            }
+
+            public void EnumerateObject(object o, ulong objectSize, Dictionary<object, long> serializedObjectMap, Queue<object> objectQueue, Stream stream, long objectStart, ref long lastReservedObjectEnd)
+            {
+                int series = this.GetNumSeries();
+                int highest = this.GetHighestSeries();
+                int curr = highest;
+
+                if (series > 0)
+                {
+                    int lowest = this.GetLowestSeries();
+                    do
+                    {
+                        ulong offset = this.GetSeriesOffset(curr);
+                        ulong stop = offset + (ulong)(this.GetSeriesSize(curr) + (long)objectSize);
+
+                        while (offset < stop)
+                        {
+                            EachObjectReference(o, (int)offset, serializedObjectMap, objectQueue, stream, objectStart, ref lastReservedObjectEnd);
+                            offset += (ulong)IntPtr.Size;
+                        }
+
+                        curr -= IntPtr.Size * 2;
+                    } while (curr >= lowest);
+                }
+                else
+                {
+                    ulong offset = this.GetSeriesOffset(curr);
+                    while (offset < objectSize - (ulong)IntPtr.Size)
+                    {
+                        for (int i = 0; i > series; i--)
+                        {
+                            uint nptrs = this.GetPointers(curr, i);
+                            uint skip = this.GetSkip(curr, i);
+
+                            ulong stop = offset + nptrs * (uint)IntPtr.Size;
+                            do
+                            {
+                                EachObjectReference(o, (int)offset, serializedObjectMap, objectQueue, stream, objectStart, ref lastReservedObjectEnd);
+                                offset += (ulong)IntPtr.Size;
+                            } while (offset < stop);
+
+                            offset += skip;
+                        }
+                    }
+                }
+            }
+
+            [MethodImpl(MethodImplOptions.AggressiveInlining)]
+            private static int ComputeSize(int series)
+            {
+                return IntPtr.Size + series * IntPtr.Size * 2;
+            }
+
+            [MethodImpl(MethodImplOptions.AggressiveInlining | MethodImplOptions.AggressiveOptimization)]
+            private static void EachObjectReference(object o, int fieldOffset, Dictionary<object, long> serializedObjectMap, Queue<object> objectQueue, Stream stream, long objectStart, ref long lastReservedObjectEnd)
+            {
+                ref var objectReference = ref Unsafe.As<byte, object>(ref Unsafe.Add(ref GetRawData(o), fieldOffset - IntPtr.Size));
+                if (objectReference == null)
+                {
+                    return;
+                }
+
+                if (!serializedObjectMap.TryGetValue(objectReference, out var objectReferenceDiskOffset))
+                {
+                    objectReferenceDiskOffset = lastReservedObjectEnd + IntPtr.Size; // + IntPtr.Size because object references point to the MT*
+                    var objectSize = GetObjectSize(objectReference);
+                    lastReservedObjectEnd += objectSize + Padding(objectSize, IntPtr.Size);
+
+                    serializedObjectMap.Add(objectReference, objectReferenceDiskOffset);
+                    objectQueue.Enqueue(objectReference);
+                }
+
+                WriteFileAtPosition(stream, objectStart + fieldOffset, new ReadOnlySpan<byte>(&objectReferenceDiskOffset, IntPtr.Size));
+            }
+
+            private static void WriteFileAtPosition(Stream stream, long position, ReadOnlySpan<byte> data)
+            {
+                stream.Seek(position, SeekOrigin.Begin);
+                stream.Write(data);
+            }
         }
     }
 }

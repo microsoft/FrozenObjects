@@ -1,0 +1,21 @@
+﻿<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>netcoreapp3.0</TargetFramework>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+    <DebugType>Embedded</DebugType>
+    <EmbedAllSources>true</EmbedAllSources>
+    <LangVersion>7.3</LangVersion>
+    <InternalCallsOutputPath>$(MSBuildThisFileDirectory)/$(BaseIntermediateOutputPath)/$(Configuration)/$(TargetFramework)/Microsoft.FrozenObjects.InternalCalls.dll</InternalCallsOutputPath>
+  </PropertyGroup>
+  <ItemGroup>
+    <Reference Include="Microsoft.FrozenObjects.InternalCalls">
+      <HintPath>$(InternalCallsOutputPath)</HintPath>
+    </Reference>
+  </ItemGroup>
+
+  <Target Name="InvokeBuildTools" BeforeTargets="ResolveAssemblyReferences" Condition="!Exists('$(InternalCallsOutputPath)')">
+    <Exec WorkingDirectory="$(MSBuildThisFileDirectory)../tools" Command="dotnet run $(InternalCallsOutputPath)" />
+  </Target>
+
+</Project>
