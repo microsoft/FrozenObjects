@@ -1,8 +1,6 @@
-# FrozenObjectSerializer
+# Frozen Objects
 
-| Job         | Status |
-| ---         | ------ |     
-| Windows x64 | [![Build status](https://dev.azure.com/ms/FrozenObjects/_apis/build/status/Frozen%20Object%20Toolchain%20Windows%20X64)](https://dev.azure.com/ms/FrozenObjects/_build?definitionId=156) |
+[![Build status](https://dev.azure.com/ms/FrozenObjects/_apis/build/status/FrozenObjects)](https://dev.azure.com/ms/FrozenObjects/_build/latest?definitionId=175)
 
 Serialize an object graph to frozen objects
 
