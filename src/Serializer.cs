@@ -52,57 +52,60 @@
             var serializedObjectMap = new Dictionary<object, long>();
             var mtTokenMap = new Dictionary<IntPtr, long>();
             var objectQueue = new Queue<object>();
+            int pointerSize = IntPtr.Size;
 
             objectQueue.Enqueue(root);
 
             long lastReservedObjectEnd = GetObjectSize(root);
-            lastReservedObjectEnd += Padding(lastReservedObjectEnd, IntPtr.Size);
+            lastReservedObjectEnd += Padding(lastReservedObjectEnd, pointerSize);
 
-            long zero = 0;
-            long currentFilePointer = 0;
+            long nextObjectHeaderFilePointer = 0;
 
             using (var stream = new FileStream(outputDataPath, FileMode.Create, FileAccess.Write))
             {
                 while (objectQueue.Count != 0)
                 {
-                    WriteFileAndMoveCurrentFilePointer(stream, ref currentFilePointer, new ReadOnlySpan<byte>(&zero, IntPtr.Size));
-
-                    long objectStart = currentFilePointer;
-
-                    var o = objectQueue.Dequeue();
-                    var mt = GetObjectInfo(o, out var objectSize, out bool containsPointerOrCollectible);
-
-                    if (!mtTokenMap.TryGetValue(mt, out var mtToken))
+                    object o = objectQueue.Dequeue();
+                    IntPtr mt = GetObjectInfo(o, out var objectSize, out bool containsPointerOrCollectible);
+                    if (!mtTokenMap.TryGetValue(mt, out long mtToken))
                     {
                         mtToken = mtTokenMap.Count;
                         mtTokenMap.Add(mt, mtToken);
                     }
 
-                    var padding = Padding(objectSize, IntPtr.Size);
-
-                    WriteFileAndMoveCurrentFilePointer(stream, ref currentFilePointer, new ReadOnlySpan<byte>(&mtToken, IntPtr.Size));
-
-                    fixed (byte* data = &GetRawData(o))
+                    // Write the object data
                     {
-                        WriteFileAndMoveCurrentFilePointer(stream, ref currentFilePointer, new ReadOnlySpan<byte>(data, objectSize - IntPtr.Size - IntPtr.Size));
-                    }
+                        long hashCode = (RuntimeHelpers.GetHashCode(o) << 5) | (1 << 26);
+                        stream.Write(new ReadOnlySpan<byte>(&hashCode, pointerSize)); // Object Header with prepped hash code
+                        stream.Write(new ReadOnlySpan<byte>(&mtToken, pointerSize)); // Method Table token
 
-                    WriteFileAndMoveCurrentFilePointer(stream, ref currentFilePointer, new ReadOnlySpan<byte>(&zero, padding));
+                        fixed (byte* data = &GetRawData(o))
+                        {
+                            var remainingSize = objectSize - pointerSize - pointerSize; // because we have already written the object header and MT Token
+                            var buffer = data + remainingSize;
+
+                            while (true)
+                            {
+                                var chunkSize = Math.Min(64 * 1024, (int)remainingSize); // 64KB is a reasonable size
+                                stream.Write(new ReadOnlySpan<byte>(buffer - remainingSize, chunkSize));
+                                remainingSize -= chunkSize;
+
+                                if (remainingSize == 0)
+                                {
+                                    break;
+                                }
+                            }
+                        }
+                    }
 
                     if (containsPointerOrCollectible)
                     {
-                        int entries = *(int*)((byte*)mt - IntPtr.Size);
-                        if (entries < 0)
-                        {
-                            entries -= entries;
-                        }
-
-                        int slots = 1 + entries * 2;
-                        var gcdesc = new GCDesc((byte*)mt - (slots * IntPtr.Size), slots * IntPtr.Size);
-                        gcdesc.EnumerateObject(o, (ulong)objectSize, serializedObjectMap, objectQueue, stream, objectStart, ref lastReservedObjectEnd);
+                        var gcdesc = new GCDesc(mt);
+                        gcdesc.EnumerateObject(o, objectSize, serializedObjectMap, objectQueue, stream, nextObjectHeaderFilePointer, ref lastReservedObjectEnd);
                     }
 
-                    stream.Seek(currentFilePointer, SeekOrigin.Begin); // seek back to where the next object will be written
+                    nextObjectHeaderFilePointer += objectSize + Padding(objectSize, pointerSize);
+                    stream.Seek(nextObjectHeaderFilePointer, SeekOrigin.Begin);
                 }
             }
 
@@ -608,14 +611,8 @@
             peBlob.WriteContentTo(peStream);
         }
 
-        private static void WriteFileAndMoveCurrentFilePointer(Stream stream, ref long currentFilePointer, ReadOnlySpan<byte> data)
-        {
-            stream.Write(data);
-            currentFilePointer += data.Length;
-        }
-
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        private static IntPtr GetObjectInfo(object obj, out int objectSize, out bool containsPointerOrCollectible)
+        private static IntPtr GetObjectInfo(object obj, out long objectSize, out bool containsPointersOrCollectible)
         {
             unsafe
             {
@@ -627,11 +624,11 @@
 
                 if (hasComponentSize)
                 {
-                    int numComponents = Unsafe.As<byte, int>(ref GetRawData(obj));
+                    var numComponents = (long)Unsafe.As<byte, int>(ref GetRawData(obj));
                     objectSize += numComponents * mt->ComponentSize;
                 }
 
-                containsPointerOrCollectible = (flags & 0x10000000) == 0x10000000 || (flags & 0x1000000) == 0x1000000;
+                containsPointersOrCollectible = (flags & 0x10000000) == 0x10000000 || (flags & 0x1000000) == 0x1000000;
                 return (IntPtr)mt;
             }
         }
@@ -641,22 +638,16 @@
             return ref InternalHelpers.GetRawData(o);
         }
 
-        private static int GetObjectSize(object obj)
+        private static long GetObjectSize(object obj)
         {
             GetObjectInfo(obj, out var objectSize, out var __);
             return objectSize;
         }
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        private static int Padding(int num, int align)
+        private static int Padding(long num, int align)
         {
-            return 0 - num & (align - 1);
-        }
-
-        [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        private static long Padding(long num, int align)
-        {
-            return 0 - num & (align - 1);
+            return (int)(0 - num & (align - 1));
         }
 
         [StructLayout(LayoutKind.Explicit)]
@@ -669,7 +660,7 @@
             public uint Flags;
 
             [FieldOffset(4)]
-            public int BaseSize;
+            public uint BaseSize;
         }
 
         private unsafe struct GCDesc
@@ -678,10 +669,18 @@
 
             private readonly int size;
 
-            public GCDesc(byte* data, int size)
+            public GCDesc(IntPtr mt)
             {
-                this.data = new IntPtr(data);
-                this.size = size;
+                int entries = *(int*)(mt - IntPtr.Size);
+                if (entries < 0)
+                {
+                    entries -= entries;
+                }
+
+                int slots = 1 + entries * 2;
+
+                this.data = new IntPtr((byte*)mt - (slots * IntPtr.Size));
+                this.size = slots * IntPtr.Size;
             }
 
             [MethodImpl(MethodImplOptions.AggressiveInlining)]
@@ -728,8 +727,9 @@
                 return IntPtr.Size == 8 ? (uint)Marshal.ReadInt32(this.data + curr + offset) : (uint)Marshal.ReadInt16(this.data + curr + offset);
             }
 
-            public void EnumerateObject(object o, ulong objectSize, Dictionary<object, long> serializedObjectMap, Queue<object> objectQueue, Stream stream, long objectStart, ref long lastReservedObjectEnd)
+            public void EnumerateObject(object o, long objectSize, Dictionary<object, long> serializedObjectMap, Queue<object> objectQueue, Stream stream, long objectHeaderStart, ref long lastReservedObjectEnd)
             {
+                uint pointerSize = (uint)IntPtr.Size;
                 int series = this.GetNumSeries();
                 int highest = this.GetHighestSeries();
                 int curr = highest;
@@ -740,32 +740,32 @@
                     do
                     {
                         ulong offset = this.GetSeriesOffset(curr);
-                        ulong stop = offset + (ulong)(this.GetSeriesSize(curr) + (long)objectSize);
+                        ulong stop = offset + (ulong)(this.GetSeriesSize(curr) + objectSize);
 
                         while (offset < stop)
                         {
-                            EachObjectReference(o, (int)offset, serializedObjectMap, objectQueue, stream, objectStart, ref lastReservedObjectEnd);
-                            offset += (ulong)IntPtr.Size;
+                            EachObjectReference(o, (int)offset, serializedObjectMap, objectQueue, stream, objectHeaderStart, ref lastReservedObjectEnd);
+                            offset += pointerSize;
                         }
 
-                        curr -= IntPtr.Size * 2;
+                        curr -= (int)pointerSize * 2;
                     } while (curr >= lowest);
                 }
                 else
                 {
                     ulong offset = this.GetSeriesOffset(curr);
-                    while (offset < objectSize - (ulong)IntPtr.Size)
+                    while (offset < (ulong)(objectSize - pointerSize))
                     {
                         for (int i = 0; i > series; i--)
                         {
                             uint nptrs = this.GetPointers(curr, i);
                             uint skip = this.GetSkip(curr, i);
 
-                            ulong stop = offset + nptrs * (uint)IntPtr.Size;
+                            ulong stop = offset + nptrs * pointerSize;
                             do
                             {
-                                EachObjectReference(o, (int)offset, serializedObjectMap, objectQueue, stream, objectStart, ref lastReservedObjectEnd);
-                                offset += (ulong)IntPtr.Size;
+                                EachObjectReference(o, (int)offset, serializedObjectMap, objectQueue, stream, objectHeaderStart, ref lastReservedObjectEnd);
+                                offset += pointerSize;
                             } while (offset < stop);
 
                             offset += skip;
@@ -781,9 +781,10 @@
             }
 
             [MethodImpl(MethodImplOptions.AggressiveInlining | MethodImplOptions.AggressiveOptimization)]
-            private static void EachObjectReference(object o, int fieldOffset, Dictionary<object, long> serializedObjectMap, Queue<object> objectQueue, Stream stream, long objectStart, ref long lastReservedObjectEnd)
+            private static void EachObjectReference(object o, int fieldOffset, Dictionary<object, long> serializedObjectMap, Queue<object> objectQueue, Stream stream, long objectHeaderStart, ref long lastReservedObjectEnd)
             {
-                ref var objectReference = ref Unsafe.As<byte, object>(ref Unsafe.Add(ref GetRawData(o), fieldOffset - IntPtr.Size));
+                int pointerSize = IntPtr.Size;
+                ref var objectReference = ref Unsafe.As<byte, object>(ref Unsafe.Add(ref GetRawData(o), fieldOffset - pointerSize));
                 if (objectReference == null)
                 {
                     return;
@@ -791,21 +792,16 @@
 
                 if (!serializedObjectMap.TryGetValue(objectReference, out var objectReferenceDiskOffset))
                 {
-                    objectReferenceDiskOffset = lastReservedObjectEnd + IntPtr.Size; // + IntPtr.Size because object references point to the MT*
+                    objectReferenceDiskOffset = lastReservedObjectEnd + pointerSize; // + IntPtr.Size because object references point to the MT*
                     var objectSize = GetObjectSize(objectReference);
-                    lastReservedObjectEnd += objectSize + Padding(objectSize, IntPtr.Size);
+                    lastReservedObjectEnd += objectSize + Padding(objectSize, pointerSize);
 
                     serializedObjectMap.Add(objectReference, objectReferenceDiskOffset);
                     objectQueue.Enqueue(objectReference);
                 }
 
-                WriteFileAtPosition(stream, objectStart + fieldOffset, new ReadOnlySpan<byte>(&objectReferenceDiskOffset, IntPtr.Size));
-            }
-
-            private static void WriteFileAtPosition(Stream stream, long position, ReadOnlySpan<byte> data)
-            {
-                stream.Seek(position, SeekOrigin.Begin);
-                stream.Write(data);
+                stream.Seek(objectHeaderStart + pointerSize + fieldOffset, SeekOrigin.Begin);
+                stream.Write(new ReadOnlySpan<byte>(&objectReferenceDiskOffset, pointerSize));
             }
         }
     }
