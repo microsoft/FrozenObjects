@@ -633,9 +633,10 @@
             }
         }
 
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
         private static ref byte GetRawData(object o)
         {
-            return ref InternalHelpers.GetRawData(o);
+            return ref Unsafe.As<RawData>(o).Data;
         }
 
         private static long GetObjectSize(object obj)
@@ -803,6 +804,11 @@
                 stream.Seek(objectHeaderStart + pointerSize + fieldOffset, SeekOrigin.Begin);
                 stream.Write(new ReadOnlySpan<byte>(&objectReferenceDiskOffset, pointerSize));
             }
+        }
+
+        private class RawData
+        {
+            public byte Data;
         }
     }
 }

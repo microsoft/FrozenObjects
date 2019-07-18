@@ -38,11 +38,9 @@
 
             var spcAssemblyRef = metadataBuilder.AddAssemblyReference(metadataBuilder.GetOrAddString("System.Private.CoreLib"), new Version(4, 0, 0, 0), default, metadataBuilder.GetOrAddBlob(new byte[] { 0x7C, 0xEC, 0x85, 0xD7, 0xBE, 0xA7, 0x79, 0x8E }), default, default);
             var gcTypeRef = metadataBuilder.AddTypeReference(spcAssemblyRef, metadataBuilder.GetOrAddString("System"), metadataBuilder.GetOrAddString("GC"));
-            var jitHelpersTypeRef = metadataBuilder.AddTypeReference(spcAssemblyRef, metadataBuilder.GetOrAddString("System.Runtime.CompilerServices"), metadataBuilder.GetOrAddString("JitHelpers"));
 
             var createRegisterFrozenSegmentMethodDefinitionHandle = CreateRegisterFrozenSegmentMethod(metadataBuilder, codeBuilder, CreateRegisterFrozenSegmentMemberReferenceHandle(metadataBuilder, gcTypeRef));
             CreateUnregisterFrozenSegmentMethod(metadataBuilder, codeBuilder, CreateUnregisterFrozenSegmentMemberReferenceHandle(metadataBuilder, gcTypeRef));
-            CreateGetRawDataMethod(metadataBuilder, codeBuilder, jitHelpersTypeRef);
             metadataBuilder.AddTypeDefinition(TypeAttributes.Public | TypeAttributes.Abstract | TypeAttributes.AutoLayout | TypeAttributes.AnsiClass | TypeAttributes.Sealed | TypeAttributes.BeforeFieldInit, metadataBuilder.GetOrAddString("Microsoft.FrozenObjects"), metadataBuilder.GetOrAddString("InternalHelpers"), systemObjectTypeRef, assemblyNameField, createRegisterFrozenSegmentMethodDefinitionHandle);
 
             var ignoresAccessChecksToAttributeConstructor = CreateIgnoresAccessChecksToAttributeConstructorMethod(metadataBuilder, codeBuilder, CreateAttributeConstructorMemberRef(metadataBuilder, attributeTypeRef), assemblyNameField);
@@ -276,28 +274,6 @@
                 });
 
             return metadataBuilder.AddMethodDefinition(MethodAttributes.Public | MethodAttributes.HideBySig | MethodAttributes.SpecialName, MethodImplAttributes.IL | MethodImplAttributes.Managed, metadataBuilder.GetOrAddString("get_AssemblyName"), metadataBuilder.GetOrAddBlob(signatureBuilder), bodyOffset, parameterList: default);
-        }
-
-        private static void CreateGetRawDataMethod(MetadataBuilder metadataBuilder, BlobBuilder codeBuilder, TypeReferenceHandle jitHelpersTypeReferenceHandle)
-        {
-            codeBuilder.Align(4);
-
-            var ilBuilder = new BlobBuilder();
-            var il = new InstructionEncoder(ilBuilder);
-
-            var signatureBuilder = new BlobBuilder();
-            new BlobEncoder(signatureBuilder).MethodSignature().Parameters(1, returnType => returnType.Type(isByRef: true).Byte(), parameters => { parameters.AddParameter().Type().Object(); });
-            var signatureHandle = metadataBuilder.GetOrAddBlob(signatureBuilder);
-
-            il.LoadArgument(0);
-            il.Call(metadataBuilder.AddMemberReference(jitHelpersTypeReferenceHandle, metadataBuilder.GetOrAddString("GetRawData"), signatureHandle));
-            il.OpCode(ILOpCode.Ret);
-
-            var methodBodyStream = new MethodBodyStreamEncoder(codeBuilder);
-            int bodyOffset = methodBodyStream.AddMethodBody(il);
-            ilBuilder.Clear();
-
-            metadataBuilder.AddMethodDefinition(MethodAttributes.Public | MethodAttributes.HideBySig | MethodAttributes.Static, MethodImplAttributes.IL | MethodImplAttributes.Managed, metadataBuilder.GetOrAddString("GetRawData"), signatureHandle, bodyOffset, parameterList: default);
         }
 
         private static void WritePEImage(Stream peStream, MetadataBuilder metadataBuilder, BlobBuilder ilBuilder, Blob mvidFixup = default, byte[] privateKeyOpt = null)
