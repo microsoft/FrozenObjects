@@ -75,7 +75,7 @@
 
                     // Write the object data
                     {
-                        long hashCode = (RuntimeHelpers.GetHashCode(o) << 5) | (1 << 26);
+                        long hashCode = (RuntimeHelpers.GetHashCode(o) & 0x0fffffff) | (1 << 27) | (1 << 26);
                         stream.Write(new ReadOnlySpan<byte>(&hashCode, pointerSize)); // Object Header with prepped hash code
                         stream.Write(new ReadOnlySpan<byte>(&mtToken, pointerSize)); // Method Table token
 
