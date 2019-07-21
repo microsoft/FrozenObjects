@@ -71,28 +71,29 @@
             }
         }
 
+        [MethodImpl(MethodImplOptions.NoInlining | MethodImplOptions.AggressiveOptimization)]
         private static object DeserializeInner(RuntimeTypeHandle[] runtimeTypeHandles, byte* buffer, long length)
         {
             byte* objectId = buffer + IntPtr.Size;
 
             while (objectId < buffer + length)
             {
-                var typeHandle = runtimeTypeHandles[(int)Marshal.ReadIntPtr((IntPtr)objectId)].Value;
-                bool isArray = (typeHandle.ToInt64() & 0x2) == 0x2;
+                IntPtr typeHandle = IntPtr.Size == 8 ? runtimeTypeHandles[(int)*(long*)objectId].Value : runtimeTypeHandles[*(int*)objectId].Value;
+                bool isArray = ((long)typeHandle & 0x2) == 0x2;
 
                 var mt = (MethodTable*)typeHandle;
                 if (isArray)
                 {
-                    mt = (MethodTable*)Marshal.ReadIntPtr(typeHandle, 6);
+                    mt = IntPtr.Size == 8 ? (MethodTable*)*(long*)(typeHandle + 6) : (MethodTable*)*(int*)(typeHandle + 6); // TODO: Is this correct for 32-bit?
                 }
 
-                var objectSize = mt->BaseSize;
+                long objectSize = mt->BaseSize;
                 var flags = mt->Flags;
                 bool hasComponentSize = (flags & 0x80000000) == 0x80000000;
 
                 if (hasComponentSize)
                 {
-                    var numComponents = Marshal.ReadInt32((IntPtr)objectId, IntPtr.Size);
+                    var numComponents = (long)*(int*)(objectId + IntPtr.Size);
                     objectSize += numComponents * mt->ComponentSize;
                 }
 
@@ -119,7 +120,15 @@
                     }
                 }
 
-                Marshal.WriteIntPtr((IntPtr)objectId, (IntPtr)mt);
+                if (IntPtr.Size == 8)
+                {
+                    *(long*)objectId = (long)mt;
+                }
+                else
+                {
+                    *(int*)objectId = (int)mt;
+                }
+
                 objectId += objectSize + Padding(objectSize, IntPtr.Size);
             }
 
@@ -128,9 +137,9 @@
         }
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        private static int Padding(int num, int align)
+        private static int Padding(long num, int align)
         {
-            return 0 - num & (align - 1);
+            return (int)(0 - num & (align - 1));
         }
 
         private static byte* AllocateMemory(long allocationSize)
@@ -289,7 +298,7 @@
                 return IntPtr.Size == 8 ? (uint)Marshal.ReadInt32(this.data + curr + offset) : (uint)Marshal.ReadInt16(this.data + curr + offset);
             }
 
-            public void FixupObject64(byte* addr, int size)
+            public void FixupObject64(byte* addr, long size)
             {
                 var series = this.GetNumSeries();
                 var highest = this.GetHighestSeries();
@@ -327,7 +336,7 @@
                             var nptrs = this.GetPointers(curr, i);
                             var skip = this.GetSkip(curr, i);
 
-                            var stop = ptr + nptrs * 8;
+                            var stop = ptr + nptrs * (ulong)8;
                             do
                             {
                                 var ret = *(ulong*)ptr;
@@ -345,7 +354,7 @@
                 }
             }
 
-            public void FixupObject32(byte* addr, int size)
+            public void FixupObject32(byte* addr, long size)
             {
                 var series = this.GetNumSeries();
                 var highest = this.GetHighestSeries();
@@ -383,7 +392,7 @@
                             var nptrs = this.GetPointers(curr, i);
                             var skip = this.GetSkip(curr, i);
 
-                            var stop = ptr + nptrs * 4;
+                            var stop = ptr + nptrs * (ulong)4;
                             do
                             {
                                 var ret = *(uint*)ptr;

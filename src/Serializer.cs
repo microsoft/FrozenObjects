@@ -1,6 +1,7 @@
 ﻿namespace Microsoft.FrozenObjects
 {
     using System;
+    using System.Collections;
     using System.Collections.Generic;
     using System.Collections.Immutable;
     using System.IO;
@@ -28,6 +29,96 @@
             SerializeCompanionAssembly(metadataBuilder, outputAssemblyFilePath, outputNamespace, typeName, methodName, typeTokenMap, typeToTypeSpecMap, privateKeyOpt);
         }
 
+        [MethodImpl(MethodImplOptions.NoInlining)]
+        private static unsafe void WriteObjectGraphToDisk(byte* stackAllocatedData, Stream stream, Dictionary<object, long> serializedObjectMap, Queue<object> objectQueue, RuntimeTypeHandleDictionary mtTokenMap, ref long lastReservedObjectEnd)
+        {
+            long nextObjectHeaderFilePointer = 0;
+
+            while (objectQueue.Count != 0)
+            {
+                object o = objectQueue.Dequeue();
+                ref TypeInfo typeInfo = ref mtTokenMap.GetOrAddValueRef(Type.GetTypeHandle(o));
+
+                long mtToken;
+
+                if (typeInfo != null)
+                {
+                    mtToken = typeInfo.MTToken;
+                }
+                else
+                {
+                    mtToken = mtTokenMap.Count - 1;
+                    typeInfo = GetObjectInfo(o, mtToken);
+                }
+
+                long hashCode = (RuntimeHelpers.GetHashCode(o) & 0x0fffffff) | (1 << 27) | (1 << 26);
+
+                fixed (byte* data = &GetRawData(o))
+                {
+                    MethodTable* mt;
+                    if (IntPtr.Size == 8)
+                    {
+                        *(long*)stackAllocatedData = hashCode;
+                        *(long*)(stackAllocatedData + 8) = mtToken;
+                        stream.Write(new ReadOnlySpan<byte>(stackAllocatedData, 16));
+                        mt = (MethodTable*)*(long*)(data - IntPtr.Size);
+                    }
+                    else
+                    {
+                        *(int*)stackAllocatedData = (int)hashCode;
+                        *(int*)(stackAllocatedData + 4) = (int)mtToken;
+                        stream.Write(new ReadOnlySpan<byte>(stackAllocatedData, 8));
+                        mt = (MethodTable*)*(int*)(data - IntPtr.Size);
+                    }
+                    
+                    uint flags = mt->Flags;
+                    bool hasComponentSize = (flags & 0x80000000) == 0x80000000;
+
+                    long objectSize = mt->BaseSize;
+
+                    if (hasComponentSize)
+                    {
+                        var numComponents = (long)*(int*)data;
+                        objectSize += numComponents * mt->ComponentSize;
+                    }
+
+                    var remainingSize = objectSize - IntPtr.Size - IntPtr.Size; // because we have already written the object header and MT Token
+
+                    if (remainingSize <= int.MaxValue)
+                    {
+                        stream.Write(new ReadOnlySpan<byte>(data, (int)remainingSize));
+                    }
+                    else
+                    {
+                        WriteLargeObject(stream, data, remainingSize);
+                    }
+
+                    bool containsPointersOrCollectible = (flags & 0x10000000) == 0x10000000 || (flags & 0x1000000) == 0x1000000;
+                    if (containsPointersOrCollectible)
+                    {
+                        var gcdesc = new GCDesc(typeInfo.GCDescData, typeInfo.GCDescSize);
+                        gcdesc.EnumerateObject(data, objectSize, serializedObjectMap, objectQueue, stream, nextObjectHeaderFilePointer, ref lastReservedObjectEnd);
+                    }
+
+                    nextObjectHeaderFilePointer += objectSize + Padding(objectSize, IntPtr.Size);
+                    stream.Seek(nextObjectHeaderFilePointer, SeekOrigin.Begin);
+                }
+            }
+        }
+
+        [MethodImpl(MethodImplOptions.NoInlining)]
+        private static unsafe void WriteLargeObject(Stream stream, byte* data, long remainingSize)
+        {
+            var buffer = data + remainingSize;
+
+            while (remainingSize != 0)
+            {
+                var chunkSize = Math.Min(64 * 1024, (int)remainingSize); // 64KB is a reasonable size
+                stream.Write(new ReadOnlySpan<byte>(buffer - remainingSize, chunkSize));
+                remainingSize -= chunkSize;
+            }
+        }
+
         /// <summary>
         /// Responsible for serializing the object graph (<param name="o"></param> to <param name="outputDataPath"></param>
         /// </summary>
@@ -50,72 +141,26 @@
         private static unsafe Dictionary<Type, int> SerializeDataAndBuildTypeTokenMap(object root, string outputDataPath)
         {
             var serializedObjectMap = new Dictionary<object, long>();
-            var mtTokenMap = new Dictionary<IntPtr, long>();
+            var mtTokenMap = new RuntimeTypeHandleDictionary(100);
             var objectQueue = new Queue<object>();
-            int pointerSize = IntPtr.Size;
 
             objectQueue.Enqueue(root);
 
             long lastReservedObjectEnd = GetObjectSize(root);
-            lastReservedObjectEnd += Padding(lastReservedObjectEnd, pointerSize);
+            lastReservedObjectEnd += Padding(lastReservedObjectEnd, IntPtr.Size);
 
-            long nextObjectHeaderFilePointer = 0;
+            byte* stackAllocatedData = stackalloc byte[16];
 
             using (var stream = new FileStream(outputDataPath, FileMode.Create, FileAccess.Write))
             {
-                while (objectQueue.Count != 0)
-                {
-                    object o = objectQueue.Dequeue();
-                    IntPtr mt = GetObjectInfo(o, out var objectSize, out bool containsPointerOrCollectible);
-                    if (!mtTokenMap.TryGetValue(mt, out long mtToken))
-                    {
-                        mtToken = mtTokenMap.Count;
-                        mtTokenMap.Add(mt, mtToken);
-                    }
-
-                    // Write the object data
-                    {
-                        long hashCode = (RuntimeHelpers.GetHashCode(o) & 0x0fffffff) | (1 << 27) | (1 << 26);
-                        stream.Write(new ReadOnlySpan<byte>(&hashCode, pointerSize)); // Object Header with prepped hash code
-                        stream.Write(new ReadOnlySpan<byte>(&mtToken, pointerSize)); // Method Table token
-
-                        fixed (byte* data = &GetRawData(o))
-                        {
-                            var remainingSize = objectSize - pointerSize - pointerSize; // because we have already written the object header and MT Token
-                            var buffer = data + remainingSize;
-
-                            while (true)
-                            {
-                                var chunkSize = Math.Min(64 * 1024, (int)remainingSize); // 64KB is a reasonable size
-                                stream.Write(new ReadOnlySpan<byte>(buffer - remainingSize, chunkSize));
-                                remainingSize -= chunkSize;
-
-                                if (remainingSize == 0)
-                                {
-                                    break;
-                                }
-                            }
-                        }
-                    }
-
-                    if (containsPointerOrCollectible)
-                    {
-                        var gcdesc = new GCDesc(mt);
-                        gcdesc.EnumerateObject(o, objectSize, serializedObjectMap, objectQueue, stream, nextObjectHeaderFilePointer, ref lastReservedObjectEnd);
-                    }
-
-                    nextObjectHeaderFilePointer += objectSize + Padding(objectSize, pointerSize);
-                    stream.Seek(nextObjectHeaderFilePointer, SeekOrigin.Begin);
-                }
+                WriteObjectGraphToDisk(stackAllocatedData, stream, serializedObjectMap, objectQueue, mtTokenMap, ref lastReservedObjectEnd);
             }
 
-            var typeTokenMap = new Dictionary<Type, int>();
+            var typeTokenMap = new Dictionary<Type, int>(mtTokenMap.Count);
 
-            foreach (var item in mtTokenMap)
+            foreach (var entry in mtTokenMap)
             {
-                var mt = item.Key;
-                var tmp = &mt;
-                typeTokenMap.Add(Unsafe.Read<object>(&tmp).GetType(), (int)item.Value); // Meh, expected assert failure: !CREATE_CHECK_STRING(bSmallObjectHeapPtr || bLargeObjectHeapPtr) https://github.com/dotnet/coreclr/blob/476dc1cb88a0dcedd891a0ef7a2e05d5c2f94f68/src/vm/object.cpp#L611
+                typeTokenMap.Add(Type.GetTypeFromHandle(entry.Key), (int)entry.Value.MTToken);
             }
 
             return typeTokenMap;
@@ -612,37 +657,52 @@
         }
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        private static IntPtr GetObjectInfo(object obj, out long objectSize, out bool containsPointersOrCollectible)
+        private static unsafe TypeInfo GetObjectInfo(object obj, long mtToken)
         {
-            unsafe
+            var typeInfo = new TypeInfo { MTToken = mtToken };
+            var mt = Unsafe.Add(ref Unsafe.As<byte, IntPtr>(ref GetRawData(obj)), -1);
+            uint flags = ((MethodTable*)mt)->Flags;
+
+            bool containsPointersOrCollectible = (flags & 0x10000000) == 0x10000000 || (flags & 0x1000000) == 0x1000000;
+
+            if (containsPointersOrCollectible)
             {
-                var mt = (MethodTable*)Unsafe.Add(ref Unsafe.As<byte, IntPtr>(ref GetRawData(obj)), -1);
-                uint flags = mt->Flags;
-                bool hasComponentSize = (flags & 0x80000000) == 0x80000000;
-
-                objectSize = mt->BaseSize;
-
-                if (hasComponentSize)
+                int entries = *(int*)(mt - IntPtr.Size);
+                if (entries < 0)
                 {
-                    var numComponents = (long)Unsafe.As<byte, int>(ref GetRawData(obj));
-                    objectSize += numComponents * mt->ComponentSize;
+                    entries -= entries;
                 }
 
-                containsPointersOrCollectible = (flags & 0x10000000) == 0x10000000 || (flags & 0x1000000) == 0x1000000;
-                return (IntPtr)mt;
+                int slots = 1 + entries * 2;
+
+                typeInfo.GCDescData = new IntPtr((byte*)mt - (slots * IntPtr.Size));
+                typeInfo.GCDescSize = slots * IntPtr.Size;
             }
+
+            return typeInfo;
+        }
+
+        private static unsafe long GetObjectSize(object obj)
+        {
+            var mt = (MethodTable*)Unsafe.Add(ref Unsafe.As<byte, IntPtr>(ref GetRawData(obj)), -1);
+            uint flags = mt->Flags;
+            bool hasComponentSize = (flags & 0x80000000) == 0x80000000;
+
+            long objectSize = mt->BaseSize;
+
+            if (hasComponentSize)
+            {
+                var numComponents = (long)Unsafe.As<byte, int>(ref GetRawData(obj));
+                objectSize += numComponents * mt->ComponentSize;
+            }
+
+            return objectSize;
         }
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
         private static ref byte GetRawData(object o)
         {
             return ref Unsafe.As<RawData>(o).Data;
-        }
-
-        private static long GetObjectSize(object obj)
-        {
-            GetObjectInfo(obj, out var objectSize, out var __);
-            return objectSize;
         }
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
@@ -664,24 +724,16 @@
             public uint BaseSize;
         }
 
-        private unsafe struct GCDesc
+        private readonly unsafe ref struct GCDesc
         {
             private readonly IntPtr data;
 
             private readonly int size;
 
-            public GCDesc(IntPtr mt)
+            public GCDesc(IntPtr data, int size)
             {
-                int entries = *(int*)(mt - IntPtr.Size);
-                if (entries < 0)
-                {
-                    entries -= entries;
-                }
-
-                int slots = 1 + entries * 2;
-
-                this.data = new IntPtr((byte*)mt - (slots * IntPtr.Size));
-                this.size = slots * IntPtr.Size;
+                this.data = data;
+                this.size = size;
             }
 
             [MethodImpl(MethodImplOptions.AggressiveInlining)]
@@ -728,9 +780,8 @@
                 return IntPtr.Size == 8 ? (uint)Marshal.ReadInt32(this.data + curr + offset) : (uint)Marshal.ReadInt16(this.data + curr + offset);
             }
 
-            public void EnumerateObject(object o, long objectSize, Dictionary<object, long> serializedObjectMap, Queue<object> objectQueue, Stream stream, long objectHeaderStart, ref long lastReservedObjectEnd)
+            public void EnumerateObject(byte* o, long objectSize, Dictionary<object, long> serializedObjectMap, Queue<object> objectQueue, Stream stream, long objectHeaderStart, ref long lastReservedObjectEnd)
             {
-                uint pointerSize = (uint)IntPtr.Size;
                 int series = this.GetNumSeries();
                 int highest = this.GetHighestSeries();
                 int curr = highest;
@@ -746,27 +797,27 @@
                         while (offset < stop)
                         {
                             EachObjectReference(o, (int)offset, serializedObjectMap, objectQueue, stream, objectHeaderStart, ref lastReservedObjectEnd);
-                            offset += pointerSize;
+                            offset += (uint)IntPtr.Size;
                         }
 
-                        curr -= (int)pointerSize * 2;
+                        curr -= IntPtr.Size * 2;
                     } while (curr >= lowest);
                 }
                 else
                 {
                     ulong offset = this.GetSeriesOffset(curr);
-                    while (offset < (ulong)(objectSize - pointerSize))
+                    while (offset < (ulong)(objectSize - IntPtr.Size))
                     {
                         for (int i = 0; i > series; i--)
                         {
                             uint nptrs = this.GetPointers(curr, i);
                             uint skip = this.GetSkip(curr, i);
 
-                            ulong stop = offset + nptrs * pointerSize;
+                            ulong stop = offset + nptrs * (ulong)IntPtr.Size;
                             do
                             {
                                 EachObjectReference(o, (int)offset, serializedObjectMap, objectQueue, stream, objectHeaderStart, ref lastReservedObjectEnd);
-                                offset += pointerSize;
+                                offset += (ulong)IntPtr.Size;
                             } while (offset < stop);
 
                             offset += skip;
@@ -782,10 +833,9 @@
             }
 
             [MethodImpl(MethodImplOptions.AggressiveInlining | MethodImplOptions.AggressiveOptimization)]
-            private static void EachObjectReference(object o, int fieldOffset, Dictionary<object, long> serializedObjectMap, Queue<object> objectQueue, Stream stream, long objectHeaderStart, ref long lastReservedObjectEnd)
+            private static void EachObjectReference(byte* o, int fieldOffset, Dictionary<object, long> serializedObjectMap, Queue<object> objectQueue, Stream stream, long objectHeaderStart, ref long lastReservedObjectEnd)
             {
-                int pointerSize = IntPtr.Size;
-                ref var objectReference = ref Unsafe.As<byte, object>(ref Unsafe.Add(ref GetRawData(o), fieldOffset - pointerSize));
+                ref var objectReference = ref Unsafe.AsRef<object>(o + fieldOffset - IntPtr.Size);
                 if (objectReference == null)
                 {
                     return;
@@ -793,22 +843,217 @@
 
                 if (!serializedObjectMap.TryGetValue(objectReference, out var objectReferenceDiskOffset))
                 {
-                    objectReferenceDiskOffset = lastReservedObjectEnd + pointerSize; // + IntPtr.Size because object references point to the MT*
+                    objectReferenceDiskOffset = lastReservedObjectEnd + IntPtr.Size; // + IntPtr.Size because object references point to the MT*
                     var objectSize = GetObjectSize(objectReference);
-                    lastReservedObjectEnd += objectSize + Padding(objectSize, pointerSize);
+                    lastReservedObjectEnd += objectSize + Padding(objectSize, IntPtr.Size);
 
                     serializedObjectMap.Add(objectReference, objectReferenceDiskOffset);
                     objectQueue.Enqueue(objectReference);
                 }
 
-                stream.Seek(objectHeaderStart + pointerSize + fieldOffset, SeekOrigin.Begin);
-                stream.Write(new ReadOnlySpan<byte>(&objectReferenceDiskOffset, pointerSize));
+                stream.Seek(objectHeaderStart + IntPtr.Size + fieldOffset, SeekOrigin.Begin);
+                stream.Write(new ReadOnlySpan<byte>(&objectReferenceDiskOffset, IntPtr.Size));
             }
         }
 
         private class RawData
         {
             public byte Data;
+        }
+
+        private class TypeInfo
+        {
+            public long MTToken;
+
+            public IntPtr GCDescData;
+
+            public int GCDescSize;
+        }
+
+        private class RuntimeTypeHandleDictionary
+        {
+            private int count;  // 0-based index into this.entries of head of free chain: -1 means empty
+
+            private int freeList = -1;  // 1-based index into this.entries; 0 means empty 
+
+            private int[] buckets;
+
+            private Entry[] entries;
+
+            public Entry[] Entries
+            {
+                get { return this.entries; }
+            }
+
+            public int[] Buckets
+            {
+                get { return this.buckets; }
+            }
+
+            public struct Entry
+            {
+                public RuntimeTypeHandle key;
+
+                public TypeInfo value;
+
+                public int next;
+            }
+
+            public RuntimeTypeHandleDictionary(int capacity)
+            {
+                if (capacity < 2)
+                {
+                    capacity = 2;
+                }
+
+                int PowerOf2(int v)
+                {
+                    if ((v & (v - 1)) == 0)
+                    {
+                        return v;
+                    }
+
+                    int i = 2;
+
+                    while (i < v)
+                    {
+                        i <<= 1;
+                    }
+
+                    return i;
+                }
+
+                capacity = PowerOf2(capacity);
+                this.buckets = new int[capacity];
+                this.entries = new Entry[capacity];
+            }
+
+            public int Count => this.count;
+
+            public ref TypeInfo GetOrAddValueRef(RuntimeTypeHandle key)
+            {
+                Entry[] e = this.entries;
+
+                int bucketIndex = key.GetHashCode() & (this.buckets.Length - 1);
+                for (int i = this.buckets[bucketIndex] - 1; (uint)i < (uint)e.Length; i = e[i].next)
+                {
+                    if (key.Value == e[i].key.Value)
+                    {
+                        return ref e[i].value;
+                    }
+                }
+
+                return ref AddKey(key, bucketIndex);
+            }
+
+            [MethodImpl(MethodImplOptions.NoInlining)]
+            private ref TypeInfo AddKey(RuntimeTypeHandle key, int bucketIndex)
+            {
+                Entry[] e = this.entries;
+                int entryIndex;
+                if (this.freeList != -1)
+                {
+                    entryIndex = this.freeList;
+                    this.freeList = -3 - e[this.freeList].next;
+                }
+                else
+                {
+                    if (this.count == e.Length || e.Length == 1)
+                    {
+                        e = Resize();
+                        bucketIndex = key.GetHashCode() & (this.buckets.Length - 1);
+                        // entry indexes were not changed by Resize
+                    }
+                    entryIndex = this.count;
+                }
+
+                e[entryIndex].key = key;
+                e[entryIndex].next = this.buckets[bucketIndex] - 1;
+                this.buckets[bucketIndex] = entryIndex + 1;
+                this.count++;
+                return ref e[entryIndex].value;
+            }
+
+            private Entry[] Resize()
+            {
+                int c = this.count;
+                int newSize = this.entries.Length * 2;
+                if ((uint)newSize > (uint)int.MaxValue) // uint cast handles overflow
+                {
+                    throw new InvalidOperationException("Overflow");
+                }
+
+                var e = new Entry[newSize];
+                Array.Copy(this.entries, 0, e, 0, c);
+
+                var newBuckets = new int[e.Length];
+                while (c-- > 0)
+                {
+                    int bucketIndex = e[c].key.GetHashCode() & (newBuckets.Length - 1);
+                    e[c].next = newBuckets[bucketIndex] - 1;
+                    newBuckets[bucketIndex] = c + 1;
+                }
+
+                this.buckets = newBuckets;
+                this.entries = e;
+
+                return e;
+            }
+
+            public Enumerator GetEnumerator() => new Enumerator(this);
+
+            public struct Enumerator : IEnumerator<KeyValuePair<RuntimeTypeHandle, TypeInfo>>
+            {
+                private readonly RuntimeTypeHandleDictionary dictionary;
+
+                private int index;
+
+                private int count;
+
+                private KeyValuePair<RuntimeTypeHandle, TypeInfo> current;
+
+                internal Enumerator(RuntimeTypeHandleDictionary dictionary)
+                {
+                    this.dictionary = dictionary;
+                    this.index = 0;
+                    this.count = this.dictionary.count;
+                    this.current = default;
+                }
+
+                public bool MoveNext()
+                {
+                    if (this.count == 0)
+                    {
+                        this.current = default;
+                        return false;
+                    }
+
+                    this.count--;
+
+                    while (this.dictionary.entries[this.index].next < -1)
+                    {
+                        this.index++;
+                    }
+
+                    this.current = new KeyValuePair<RuntimeTypeHandle, TypeInfo>(this.dictionary.entries[this.index].key, this.dictionary.entries[this.index++].value);
+                    return true;
+                }
+
+                public KeyValuePair<RuntimeTypeHandle, TypeInfo> Current => this.current;
+
+                object IEnumerator.Current => this.current;
+
+                void IEnumerator.Reset()
+                {
+                    this.index = 0;
+                    this.count = this.dictionary.count;
+                    this.current = default;
+                }
+
+                public void Dispose()
+                {
+                }
+            }
         }
     }
 }
