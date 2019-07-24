@@ -61,7 +61,7 @@
             {
                 VirtualFree(baseAddress, IntPtr.Zero, FreeType.Release);
             }
-            else if (RuntimeInformation.IsOSPlatform(OSPlatform.Linux))
+            else if (RuntimeInformation.IsOSPlatform(OSPlatform.Linux) || RuntimeInformation.IsOSPlatform(OSPlatform.OSX))
             {
                 munmap(baseAddress, length);
             }
@@ -151,7 +151,12 @@
             }
             else if (RuntimeInformation.IsOSPlatform(OSPlatform.Linux))
             {
-                byte* buffer = (byte*)mmap(IntPtr.Zero, (IntPtr)allocationSize, MemoryMappedProtections.PROT_READ | MemoryMappedProtections.PROT_WRITE, MemoryMappedFlags.MAP_PRIVATE | MemoryMappedFlags.MAP_ANONYMOUS, -1, IntPtr.Zero);
+                byte* buffer = (byte*)mmap(IntPtr.Zero, (IntPtr)allocationSize, MemoryMappedProtections.PROT_READ | MemoryMappedProtections.PROT_WRITE, (int)(MemoryMappedFlags.MAP_PRIVATE | MemoryMappedFlags.MAP_ANONYMOUS), -1, IntPtr.Zero);
+                return buffer;
+            }
+            else if (RuntimeInformation.IsOSPlatform(OSPlatform.OSX))
+            {
+                byte* buffer = (byte*)mmap(IntPtr.Zero, (IntPtr)allocationSize, MemoryMappedProtections.PROT_READ | MemoryMappedProtections.PROT_WRITE, (int)(MemoryMappedFlagsDarwin.MAP_PRIVATE | MemoryMappedFlagsDarwin.MAP_ANONYMOUS), -1, IntPtr.Zero);
                 return buffer;
             }
             else
@@ -167,7 +172,7 @@
         private static extern bool VirtualFree(IntPtr baseAddress, IntPtr size, FreeType freeType);
 
         [DllImport("libc", EntryPoint = "mmap", SetLastError = true)]
-        private static extern IntPtr mmap(IntPtr addr, IntPtr length, MemoryMappedProtections prot, MemoryMappedFlags flags, int fd, IntPtr offset);
+        private static extern IntPtr mmap(IntPtr addr, IntPtr length, MemoryMappedProtections prot, int flags, int fd, IntPtr offset);
 
         [DllImport("libc", EntryPoint = "munmap", SetLastError = true)]
         private static extern int munmap(IntPtr addr, IntPtr length);
@@ -237,6 +242,14 @@
             MAP_SHARED = 0x01,
             MAP_PRIVATE = 0x02,
             MAP_ANONYMOUS = 0x20,
+        }
+
+        [Flags]
+        internal enum MemoryMappedFlagsDarwin
+        {
+            MAP_SHARED = 0x01,
+            MAP_PRIVATE = 0x02,
+            MAP_ANONYMOUS = 0x1000,
         }
 
         internal unsafe struct GCDesc
