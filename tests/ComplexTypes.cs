@@ -1,8 +1,11 @@
-﻿using System.Collections.Generic;
-using Microsoft.Collections.Extensions;
+﻿// Copyright (c) Microsoft Corporation. All rights reserved.
+// Licensed under the MIT license. See LICENSE file in the project root for full license information.
 
 namespace Microsoft.FrozenObjects.UnitTests
 {
+    using System.Collections.Generic;
+    using Microsoft.Collections.Extensions;
+
     public enum LongEnum : long
     {
         Min = long.MinValue,

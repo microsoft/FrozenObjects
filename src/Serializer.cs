@@ -1,4 +1,7 @@
-﻿namespace Microsoft.FrozenObjects
+﻿// Copyright (c) Microsoft Corporation. All rights reserved.
+// Licensed under the MIT license. See LICENSE file in the project root for full license information.
+
+namespace Microsoft.FrozenObjects
 {
     using System;
     using System.Collections;
@@ -151,9 +154,14 @@
 
             byte* stackAllocatedData = stackalloc byte[16];
 
-            using (var stream = new FileStream(outputDataPath, FileMode.Create, FileAccess.Write))
+            using (var stream = new ChunkedMemoryStream())
             {
                 WriteObjectGraphToDisk(stackAllocatedData, stream, serializedObjectMap, objectQueue, mtTokenMap, ref lastReservedObjectEnd);
+
+                using (var fs = new FileStream(outputDataPath, FileMode.Create, FileAccess.Write))
+                {
+                    stream.CopyTo(fs, 0);
+                }
             }
 
             var typeTokenMap = new Dictionary<Type, int>(mtTokenMap.Count);
@@ -1052,6 +1060,113 @@
 
                 public void Dispose()
                 {
+                }
+            }
+        }
+
+        private sealed class ChunkedMemoryStream : Stream
+        {
+            private const int InitialChunkDefaultSize = 1024;
+
+            private const int MaxChunkSize = 1024 * InitialChunkDefaultSize;
+
+            private readonly List<MemoryChunk> bufferList = new List<MemoryChunk>();
+
+            private long position;
+
+            public override void CopyTo(Stream destination, int _)
+            {
+                for (int i = 0; i < this.bufferList.Count; ++i)
+                {
+                    var chunk = this.bufferList[i];
+                    destination.Write(chunk.buffer, 0, chunk.freeOffset);
+                }
+            }
+
+            public override void Write(byte[] buffer, int offset, int count)
+            {
+                while (count > 0)
+                {
+                    PositionToArrayIndex(this.position, out var bufferIndex, out var bufferOffset);
+
+                    while (bufferIndex >= this.bufferList.Count)
+                    {
+                        this.bufferList.Add(new MemoryChunk(MaxChunkSize));
+                    }
+
+                    var currentChunk = this.bufferList[bufferIndex];
+
+                    int remaining = currentChunk.buffer.Length - bufferOffset;
+                    if (remaining > 0)
+                    {
+                        int toCopy = Math.Min(remaining, count);
+                        Buffer.BlockCopy(buffer, offset, currentChunk.buffer, bufferOffset, toCopy);
+                        count -= toCopy;
+                        offset += toCopy;
+                        this.position += toCopy;
+                        currentChunk.freeOffset = Math.Max(currentChunk.freeOffset, bufferOffset + toCopy);
+                    }
+                    else
+                    {
+                        throw new InvalidOperationException("Unreachable");
+                    }
+                }
+            }
+
+            public override long Position
+            {
+                get => throw new NotImplementedException();
+                set => throw new NotImplementedException();
+            }
+
+            public override long Seek(long offset, SeekOrigin origin)
+            {
+                if (origin != SeekOrigin.Begin)
+                {
+                    throw new NotSupportedException();
+                }
+
+                this.position = offset;
+
+                PositionToArrayIndex(this.position, out var bufferIndex, out var _);
+
+                while (bufferIndex >= this.bufferList.Count)
+                {
+                    this.bufferList.Add(new MemoryChunk(MaxChunkSize));
+                }
+
+                return offset;
+            }
+
+            private static void PositionToArrayIndex(long position, out int bufferIndex, out int bufferOffset)
+            {
+                bufferIndex = (int)position / MaxChunkSize;
+                bufferOffset = (int)position % MaxChunkSize;
+            }
+
+            public override bool CanRead => throw new NotImplementedException();
+
+            public override bool CanSeek => throw new NotImplementedException();
+
+            public override bool CanWrite => throw new NotImplementedException();
+
+            public override long Length => throw new NotImplementedException();
+
+            public override void Flush() => throw new NotImplementedException();
+
+            public override int Read(byte[] buffer, int offset, int count) => throw new NotImplementedException();
+
+            public override void SetLength(long value) => throw new NotImplementedException();
+
+            private sealed class MemoryChunk
+            {
+                internal readonly byte[] buffer;
+
+                internal int freeOffset;
+
+                internal MemoryChunk(int bufferSize)
+                {
+                    this.buffer = new byte[bufferSize];
                 }
             }
         }
