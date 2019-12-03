@@ -154,13 +154,14 @@ namespace Microsoft.FrozenObjects
 
             byte* stackAllocatedData = stackalloc byte[16];
 
-            using (var stream = new ChunkedMemoryStream())
+            using (var stream = new MemoryStream())
             {
                 WriteObjectGraphToDisk(stackAllocatedData, stream, serializedObjectMap, objectQueue, mtTokenMap, ref lastReservedObjectEnd);
 
                 using (var fs = new FileStream(outputDataPath, FileMode.Create, FileAccess.Write))
                 {
-                    stream.CopyTo(fs, 0);
+                    stream.Position = 0;
+                    stream.CopyTo(fs, 8192);
                 }
             }
 
@@ -1064,11 +1065,9 @@ namespace Microsoft.FrozenObjects
             }
         }
 
-        private sealed class ChunkedMemoryStream : Stream
+        internal sealed class ChunkedMemoryStream : Stream
         {
-            private const int InitialChunkDefaultSize = 1024;
-
-            private const int MaxChunkSize = 1024 * InitialChunkDefaultSize;
+            private const int MaxChunkSize = 1024;
 
             private readonly List<MemoryChunk> bufferList = new List<MemoryChunk>();
 
@@ -1076,10 +1075,9 @@ namespace Microsoft.FrozenObjects
 
             public override void CopyTo(Stream destination, int _)
             {
-                for (int i = 0; i < this.bufferList.Count; ++i)
+                foreach (var chunk in this.bufferList)
                 {
-                    var chunk = this.bufferList[i];
-                    destination.Write(chunk.buffer, 0, chunk.freeOffset);
+                    destination.Write(chunk.buffer, 0, chunk.buffer.Length);
                 }
             }
 
@@ -1104,7 +1102,6 @@ namespace Microsoft.FrozenObjects
                         count -= toCopy;
                         offset += toCopy;
                         this.position += toCopy;
-                        currentChunk.freeOffset = Math.Max(currentChunk.freeOffset, bufferOffset + toCopy);
                     }
                     else
                     {
@@ -1128,7 +1125,7 @@ namespace Microsoft.FrozenObjects
 
                 this.position = offset;
 
-                PositionToArrayIndex(this.position, out var bufferIndex, out var _);
+                PositionToArrayIndex(this.position, out var bufferIndex, out var bufferOffset);
 
                 while (bufferIndex >= this.bufferList.Count)
                 {
@@ -1140,8 +1137,8 @@ namespace Microsoft.FrozenObjects
 
             private static void PositionToArrayIndex(long position, out int bufferIndex, out int bufferOffset)
             {
-                bufferIndex = (int)position / MaxChunkSize;
-                bufferOffset = (int)position % MaxChunkSize;
+                bufferIndex = (int)(position / MaxChunkSize);
+                bufferOffset = (int)(position % MaxChunkSize);
             }
 
             public override bool CanRead => throw new NotImplementedException();
@@ -1161,8 +1158,6 @@ namespace Microsoft.FrozenObjects
             private sealed class MemoryChunk
             {
                 internal readonly byte[] buffer;
-
-                internal int freeOffset;
 
                 internal MemoryChunk(int bufferSize)
                 {
