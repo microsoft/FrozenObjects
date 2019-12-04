@@ -12,11 +12,11 @@
     <copyright>Copyright © Microsoft</copyright>
     <repository type="git" url="https://github.com/microsoft/FrozenObjects" />
     <dependencies>
-      <group targetFramework=".NETCoreApp3.0" />
+      <group targetFramework=".NETCoreApp3.1" />
     </dependencies>
   </metadata>
   <files>
-    <file src="bin/Release/netcoreapp3.0/Microsoft.FrozenObjects.dll" target="lib/netcoreapp3.0" />
-    <file src="bin/Release/netcoreapp3.0/Microsoft.FrozenObjects.InternalCalls.dll" target="lib/netcoreapp3.0" />
+    <file src="bin/Release/netcoreapp3.1/Microsoft.FrozenObjects.dll" target="lib/netcoreapp3.1" />
+    <file src="bin/Release/netcoreapp3.1/Microsoft.FrozenObjects.InternalCalls.dll" target="lib/netcoreapp3.1" />
   </files>
 </package>
