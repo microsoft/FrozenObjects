@@ -1073,11 +1073,25 @@ namespace Microsoft.FrozenObjects
 
             private long position;
 
+            private long totalLength;
+
             public override void CopyTo(Stream destination, int _)
             {
+                long cur = 0;
                 foreach (var chunk in this.bufferList)
                 {
-                    destination.Write(chunk.buffer, 0, chunk.buffer.Length);
+                    var toCopy = chunk.buffer.Length;
+                    if (cur + toCopy > this.totalLength)
+                    {
+                        toCopy = (int)(this.totalLength - cur);
+                        if (toCopy <= 0)
+                        {
+                            break;
+                        }
+                    }
+
+                    destination.Write(chunk.buffer, 0, toCopy);
+                    cur += toCopy;
                 }
             }
 
@@ -1102,6 +1116,7 @@ namespace Microsoft.FrozenObjects
                         count -= toCopy;
                         offset += toCopy;
                         this.position += toCopy;
+                        this.totalLength = Math.Max(this.totalLength, this.position);
                     }
                     else
                     {
