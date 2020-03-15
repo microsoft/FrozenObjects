@@ -14,6 +14,7 @@ namespace Microsoft.FrozenObjects
     using System.Reflection.PortableExecutable;
     using System.Runtime.CompilerServices;
     using System.Runtime.InteropServices;
+    using static NativeMethods;
 
     public static class Serializer
     {
@@ -154,13 +155,13 @@ namespace Microsoft.FrozenObjects
 
             byte* stackAllocatedData = stackalloc byte[16];
 
-            using (var stream = new MemoryStream())
+            using (var stream = new ResizableMemoryStream())
             {
                 WriteObjectGraphToDisk(stackAllocatedData, stream, serializedObjectMap, objectQueue, mtTokenMap, ref lastReservedObjectEnd);
 
                 using (var fs = new FileStream(outputDataPath, FileMode.Create, FileAccess.Write))
                 {
-                    stream.Position = 0;
+                    stream.Seek(0, SeekOrigin.Begin);
                     stream.CopyTo(fs, 8192);
                 }
             }
@@ -1064,106 +1065,173 @@ namespace Microsoft.FrozenObjects
                 }
             }
         }
-
-        internal sealed class ChunkedMemoryStream : Stream
+        internal sealed class ResizableMemoryStream : Stream
         {
-            private const int MaxChunkSize = 1024;
-
-            private readonly List<MemoryChunk> bufferList = new List<MemoryChunk>();
+            private unsafe byte* nativeMemory;
 
             private long position;
 
-            public override void CopyTo(Stream destination, int _)
-            {
-                foreach (var chunk in this.bufferList)
-                {
-                    destination.Write(chunk.buffer, 0, chunk.buffer.Length);
-                }
-            }
+            private long length;
 
-            public override void Write(byte[] buffer, int offset, int count)
-            {
-                while (count > 0)
-                {
-                    PositionToArrayIndex(this.position, out var bufferIndex, out var bufferOffset);
+            private long capacity;
 
-                    while (bufferIndex >= this.bufferList.Count)
-                    {
-                        this.bufferList.Add(new MemoryChunk(MaxChunkSize));
-                    }
+            public override bool CanRead => throw new NotSupportedException();
 
-                    var currentChunk = this.bufferList[bufferIndex];
+            public override bool CanSeek => throw new NotSupportedException();
 
-                    int remaining = currentChunk.buffer.Length - bufferOffset;
-                    if (remaining > 0)
-                    {
-                        int toCopy = Math.Min(remaining, count);
-                        Buffer.BlockCopy(buffer, offset, currentChunk.buffer, bufferOffset, toCopy);
-                        count -= toCopy;
-                        offset += toCopy;
-                        this.position += toCopy;
-                    }
-                    else
-                    {
-                        throw new InvalidOperationException("Unreachable");
-                    }
-                }
-            }
+            public override bool CanWrite => throw new NotSupportedException();
+
+            public override long Length => throw new NotSupportedException();
 
             public override long Position
             {
-                get => throw new NotImplementedException();
-                set => throw new NotImplementedException();
+                get => throw new NotSupportedException();
+                set => throw new NotSupportedException();
             }
 
-            public override long Seek(long offset, SeekOrigin origin)
+            public override void CopyTo(Stream destination, int bufferSize)
             {
-                if (origin != SeekOrigin.Begin)
+                if (this.position > 0)
                 {
-                    throw new NotSupportedException();
+                    throw new ArgumentException("Only supports CopyTo when position is 0");
+                }
+
+                this.position = this.length;
+
+                long bytesCopied = 0;
+                while (bytesCopied < this.length)
+                {
+                    unsafe
+                    {
+                        var bytesToCopy = (int)Math.Min(this.length - bytesCopied, bufferSize);
+                        var span = new ReadOnlySpan<byte>(this.nativeMemory + bytesCopied, bytesToCopy);
+                        destination.Write(span);
+                        bytesCopied += bytesToCopy;
+                    }
+                }
+            }
+
+            public override long Seek(long offset, SeekOrigin loc)
+            {
+                if (loc != SeekOrigin.Begin)
+                {
+                    throw new ArgumentException(nameof(loc));
                 }
 
                 this.position = offset;
 
-                PositionToArrayIndex(this.position, out var bufferIndex, out var bufferOffset);
+                return this.position;
+            }
 
-                while (bufferIndex >= this.bufferList.Count)
+            public override void Write(ReadOnlySpan<byte> buffer)
+            {
+                long i = this.position + buffer.Length;
+
+                if (i > this.length)
                 {
-                    this.bufferList.Add(new MemoryChunk(MaxChunkSize));
+                    if (i > this.capacity)
+                    {
+                        this.EnsureCapacity(i);
+                    }
+
+                    this.length = i;
                 }
 
-                return offset;
-            }
-
-            private static void PositionToArrayIndex(long position, out int bufferIndex, out int bufferOffset)
-            {
-                bufferIndex = (int)(position / MaxChunkSize);
-                bufferOffset = (int)(position % MaxChunkSize);
-            }
-
-            public override bool CanRead => throw new NotImplementedException();
-
-            public override bool CanSeek => throw new NotImplementedException();
-
-            public override bool CanWrite => throw new NotImplementedException();
-
-            public override long Length => throw new NotImplementedException();
-
-            public override void Flush() => throw new NotImplementedException();
-
-            public override int Read(byte[] buffer, int offset, int count) => throw new NotImplementedException();
-
-            public override void SetLength(long value) => throw new NotImplementedException();
-
-            private sealed class MemoryChunk
-            {
-                internal readonly byte[] buffer;
-
-                internal MemoryChunk(int bufferSize)
+                unsafe
                 {
-                    this.buffer = new byte[bufferSize];
+                    fixed (byte* ptr = &buffer.GetPinnableReference())
+                    {
+                        Buffer.MemoryCopy(ptr, this.nativeMemory + this.position, this.capacity, buffer.Length);
+                    }
+                }
+
+                this.position = i;
+            }
+
+            public override void Close()
+            {
+                unsafe
+                {
+                    FreeMemory((IntPtr)this.nativeMemory, (IntPtr)this.capacity);
                 }
             }
+
+            private void EnsureCapacity(long value)
+            {
+                if (value > this.capacity)
+                {
+                    long newCapacity = Math.Max(value, 64 * 1024);
+
+                    if (newCapacity < this.capacity * 2)
+                    {
+                        newCapacity = this.capacity * 2;
+                    }
+
+                    this.SetCapacity(newCapacity);
+                }
+            }
+
+            private unsafe void SetCapacity(long value)
+            {
+                if (value < this.length)
+                {
+                    throw new ArgumentOutOfRangeException(nameof(value));
+                }
+
+                var source = this.nativeMemory;
+
+                if (value != this.capacity)
+                {
+                    if (value > 0)
+                    {
+                        byte* buf = (byte*)0;
+                        try
+                        {
+                            buf = AllocateMemory(value);
+                            if (this.length > 0)
+                            {
+                                Buffer.MemoryCopy(source, buf, value, this.length);
+                            }
+                        }
+                        catch (Exception)
+                        {
+                            if (buf != (byte*)0)
+                            {
+                                FreeMemory((IntPtr)buf, (IntPtr)value);
+                            }
+
+                            throw;
+                        }
+
+                        this.nativeMemory = buf;
+                    }
+                    else
+                    {
+                        this.nativeMemory = (byte*)0;
+                    }
+
+                    if (source != (byte*)0)
+                    {
+                        FreeMemory((IntPtr)source, (IntPtr)this.capacity);
+                    }
+
+                    this.capacity = value;
+                }
+            }
+
+            public override void Flush() => throw new NotSupportedException();
+
+            public override int Read(byte[] buffer, int offset, int count) => throw new NotSupportedException();
+
+            public override void Write(byte[] buffer, int offset, int count) => throw new NotSupportedException();
+
+            public override void WriteByte(byte value) => throw new NotSupportedException();
+
+            public override int ReadByte() => throw new NotSupportedException();
+
+            public override int Read(Span<byte> buffer) => throw new NotSupportedException();
+
+            public override void SetLength(long value) => throw new NotSupportedException();
         }
     }
 }
