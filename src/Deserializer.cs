@@ -47,7 +47,7 @@ namespace Microsoft.FrozenObjects
             Marshal.WriteIntPtr((IntPtr)buffer, 0 - IntPtr.Size - IntPtr.Size, (IntPtr)(length + extraSpace));
 
             // -IntPtr.Size is for segment handle
-            Marshal.WriteIntPtr((IntPtr)buffer, 0 - IntPtr.Size, InternalHelpers.RegisterFrozenSegment((IntPtr)buffer, (IntPtr)length));
+            Marshal.WriteIntPtr((IntPtr)buffer, 0 - IntPtr.Size, InternalHelpers.RegisterFrozenSegment((IntPtr)buffer, (IntPtr)(length-IntPtr.Size)));
 
             return retVal;
         }
